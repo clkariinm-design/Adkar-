@@ -81,6 +81,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   });
 
   const [activeTab, setActiveTab] = useState<NavTab>('home');
+  const activeTabRef = useRef<NavTab>('home');
+  activeTabRef.current = activeTab;
   const [targetVerse, setTargetVerse] = useState<TargetVerseJump | null>(null);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const backHandlersRef = useRef<Set<() => boolean>>(new Set());
@@ -94,6 +96,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
+    let cancelled = false;
     let removeListener: (() => void) | undefined;
 
     CapApp.addListener('backButton', ({ canGoBack }) => {
@@ -104,7 +107,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           return;
         }
       }
-      if (activeTab !== 'home') {
+      if (activeTabRef.current !== 'home') {
         setActiveTab('home');
         return;
       }
@@ -114,13 +117,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
       CapApp.exitApp();
     }).then((handle) => {
+      if (cancelled) {
+        handle.remove();
+        return;
+      }
       removeListener = () => handle.remove();
     });
 
     return () => {
+      cancelled = true;
       if (removeListener) removeListener();
     };
-  }, [activeTab]);
+  }, []);
 
   useEffect(() => {
     const root = document.documentElement;

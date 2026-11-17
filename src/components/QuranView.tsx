@@ -65,6 +65,7 @@ export function QuranView() {
 
   // Progress & Bookmarks
   const [readingProgress, setReadingProgress] = useState<QuranReadingProgress | null>(null);
+  const [userQuranLoaded, setUserQuranLoaded] = useState(false);
   const [bookmarks, setBookmarks] = useState<QuranBookmark[]>([]);
   const [bookmarksLoading, setBookmarksLoading] = useState(false);
   const [editingBookmarkVerse, setEditingBookmarkVerse] = useState<QuranVerse | null>(null);
@@ -79,6 +80,7 @@ export function QuranView() {
   const [hasSearched, setHasSearched] = useState(false);
 
   const pendingScrollVerseRef = useRef<number | null>(null);
+  const pendingAutoSaveRef = useRef<{ surahId: number; verseNumber: number } | null>(null);
 
   useEffect(() => {
     return registerBackHandler(() => {
@@ -145,6 +147,7 @@ export function QuranView() {
       }
     } finally {
       setBookmarksLoading(false);
+      setUserQuranLoaded(true);
     }
   }, [user]);
 
@@ -154,11 +157,13 @@ export function QuranView() {
 
   useEffect(() => {
     if (!targetVerse) return;
+    const targetNum = targetVerse.verseNumber ?? 1;
     setMode('surahs');
     setSelectedSurahId(targetVerse.surahId);
-    const targetPage = targetVerse.verseNumber ? Math.max(1, Math.ceil(targetVerse.verseNumber / VERSES_PER_PAGE)) : 1;
+    const targetPage = Math.max(1, Math.ceil(targetNum / VERSES_PER_PAGE));
     setPage(targetPage);
-    pendingScrollVerseRef.current = targetVerse.verseNumber ?? 1;
+    pendingScrollVerseRef.current = targetNum;
+    pendingAutoSaveRef.current = { surahId: targetVerse.surahId, verseNumber: targetNum };
     setMobileReaderOpen(true);
   }, [targetVerse]);
 
@@ -247,34 +252,48 @@ export function QuranView() {
 
   const lastAutoSavedRef = useRef<string>('');
   useEffect(() => {
-    if (!user || mode !== 'surahs' || verses.length === 0) return;
-    const firstVerse = verses[0];
-    if (!firstVerse) return;
-    const key = `${firstVerse.surah_id}:${firstVerse.verse_number}`;
-    if (lastAutoSavedRef.current === key) return;
+    if (!user || !userQuranLoaded || mode !== 'surahs' || verses.length === 0) return;
 
-    if (
-      lastAutoSavedRef.current === '' &&
-      readingProgress &&
-      readingProgress.last_surah_id === firstVerse.surah_id &&
-      readingProgress.last_verse_number > firstVerse.verse_number
-    ) {
-      lastAutoSavedRef.current = key;
+    const intended = pendingAutoSaveRef.current;
+    // Wait for explicit user navigation unless user has no reading progress yet
+    if (!intended && readingProgress) {
       return;
     }
 
+    const saveSurahId = intended ? intended.surahId : verses[0].surah_id;
+    const saveVerseNum = intended ? intended.verseNumber : verses[0].verse_number;
+    if (verses[0].surah_id !== saveSurahId) return;
+
+    const key = `${saveSurahId}:${saveVerseNum}`;
+    if (lastAutoSavedRef.current === key) {
+      pendingAutoSaveRef.current = null;
+      return;
+    }
+
+    pendingAutoSaveRef.current = null;
     lastAutoSavedRef.current = key;
+
+    // Do not overwrite if already at this exact position
+    if (
+      readingProgress &&
+      readingProgress.last_surah_id === saveSurahId &&
+      readingProgress.last_verse_number === saveVerseNum
+    ) {
+      return;
+    }
+
     const timer = window.setTimeout(() => {
-      saveReadingProgress(firstVerse.surah_id, firstVerse.verse_number, false);
+      saveReadingProgress(saveSurahId, saveVerseNum, false);
     }, 800);
     return () => window.clearTimeout(timer);
-  }, [user, mode, verses, readingProgress, saveReadingProgress]);
+  }, [user, userQuranLoaded, mode, verses, readingProgress, saveReadingProgress]);
 
   const handleSelectSurah = (surahId: number, targetVerseNum = 1) => {
     setSelectedSurahId(surahId);
     const nextPage = Math.max(1, Math.ceil(targetVerseNum / VERSES_PER_PAGE));
     setPage(nextPage);
     pendingScrollVerseRef.current = targetVerseNum;
+    pendingAutoSaveRef.current = { surahId, verseNumber: targetVerseNum };
     setMobileReaderOpen(true);
     setMode('surahs');
   };
@@ -358,7 +377,7 @@ export function QuranView() {
     setHasSearched(true);
 
     try {
-      const [transMatches, arMatches] = await Promise.all([
+      const [transMatches, arUthmaniMatches, arSimpleMatches] = await Promise.all([
         supabase
           .from('quran_translations')
           .select('verse_id')
@@ -369,15 +388,22 @@ export function QuranView() {
           .select('id')
           .ilike('text_uthmani', `%${q}%`)
           .limit(20),
+        supabase
+          .from('quran_verses')
+          .select('id')
+          .ilike('text_simple', `%${q}%`)
+          .limit(20),
       ]);
 
       if (transMatches.error) throw transMatches.error;
-      if (arMatches.error) throw arMatches.error;
+      if (arUthmaniMatches.error) throw arUthmaniMatches.error;
+      if (arSimpleMatches.error) throw arSimpleMatches.error;
 
       const verseIds = Array.from(
         new Set([
           ...(transMatches.data ?? []).map((r) => r.verse_id),
-          ...(arMatches.data ?? []).map((r) => r.id),
+          ...(arUthmaniMatches.data ?? []).map((r) => r.id),
+          ...(arSimpleMatches.data ?? []).map((r) => r.id),
         ])
       ).slice(0, 25);
 
@@ -695,7 +721,9 @@ export function QuranView() {
             ) : (
               <div className="divide-y divide-[#EFECE4] dark:divide-[#18352B]">
                 {verses.map((verse) => {
-                  const translation = verse.quran_translations?.[0];
+                  const translation =
+                    verse.quran_translations?.find((tr) => tr.language_code === 'so') ??
+                    verse.quran_translations?.[0];
                   const isBookmarked = bookmarkedMap.has(verse.id);
                   const isLastRead =
                     readingProgress?.last_surah_id === verse.surah_id &&
@@ -827,7 +855,12 @@ export function QuranView() {
                   type="button"
                   disabled={page <= 1}
                   onClick={() => {
-                    setPage((p) => Math.max(1, p - 1));
+                    const nextPage = Math.max(1, page - 1);
+                    pendingAutoSaveRef.current = {
+                      surahId: selectedSurahId,
+                      verseNumber: (nextPage - 1) * VERSES_PER_PAGE + 1,
+                    };
+                    setPage(nextPage);
                     window.scrollTo({ top: 0, behavior: 'smooth' });
                   }}
                   className="px-3.5 py-2 rounded-lg border border-[#E5DFD3] dark:border-[#1B3A2F] text-xs font-medium disabled:opacity-40 inline-flex items-center gap-1.5 hover:bg-white dark:hover:bg-[#112921]"
@@ -844,7 +877,12 @@ export function QuranView() {
                   type="button"
                   disabled={page >= totalPages}
                   onClick={() => {
-                    setPage((p) => Math.min(totalPages, p + 1));
+                    const nextPage = Math.min(totalPages, page + 1);
+                    pendingAutoSaveRef.current = {
+                      surahId: selectedSurahId,
+                      verseNumber: (nextPage - 1) * VERSES_PER_PAGE + 1,
+                    };
+                    setPage(nextPage);
                     window.scrollTo({ top: 0, behavior: 'smooth' });
                   }}
                   className="px-3.5 py-2 rounded-lg border border-[#E5DFD3] dark:border-[#1B3A2F] text-xs font-medium disabled:opacity-40 inline-flex items-center gap-1.5 hover:bg-white dark:hover:bg-[#112921]"
@@ -896,6 +934,9 @@ export function QuranView() {
             <div className="divide-y divide-[#EFECE4] dark:divide-[#18352B]">
               {searchResults.map((v) => {
                 const s = surahById.get(v.surah_id);
+                const tr =
+                  v.quran_translations?.find((item) => item.language_code === 'so') ??
+                  v.quran_translations?.[0];
                 return (
                   <div key={v.id} className="py-5 space-y-3">
                     <div className="flex items-center justify-between gap-3">
@@ -914,9 +955,9 @@ export function QuranView() {
                     <p dir="rtl" lang="ar" className="font-arabic text-2xl leading-[2] text-[#14241E] dark:text-[#F2EFE9]">
                       {v.text_uthmani}
                     </p>
-                    {v.quran_translations?.[0]?.translation_text && (
+                    {tr?.translation_text && (
                       <p className="text-sm text-[#52635C] dark:text-[#D6E2DC]">
-                        {v.quran_translations[0].translation_text}
+                        {tr.translation_text}
                       </p>
                     )}
                   </div>
@@ -966,22 +1007,27 @@ export function QuranView() {
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
-                    {v && (
-                      <>
-                        <p
-                          dir="rtl"
-                          lang="ar"
-                          className="font-arabic text-2xl leading-[2] text-[#14241E] dark:text-[#F2EFE9]"
-                        >
-                          {v.text_uthmani}
-                        </p>
-                        {v.quran_translations?.[0]?.translation_text && (
-                          <p className="text-sm text-[#52635C] dark:text-[#D6E2DC]">
-                            {v.quran_translations[0].translation_text}
+                    {v && (() => {
+                      const tr =
+                        v.quran_translations?.find((item) => item.language_code === 'so') ??
+                        v.quran_translations?.[0];
+                      return (
+                        <>
+                          <p
+                            dir="rtl"
+                            lang="ar"
+                            className="font-arabic text-2xl leading-[2] text-[#14241E] dark:text-[#F2EFE9]"
+                          >
+                            {v.text_uthmani}
                           </p>
-                        )}
-                      </>
-                    )}
+                          {tr?.translation_text && (
+                            <p className="text-sm text-[#52635C] dark:text-[#D6E2DC]">
+                              {tr.translation_text}
+                            </p>
+                          )}
+                        </>
+                      );
+                    })()}
                     {bm.note && (
                       <p className="text-xs italic text-[#7A6334] dark:text-[#D4AF6A]">{bm.note}</p>
                     )}

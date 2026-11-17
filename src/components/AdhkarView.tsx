@@ -56,6 +56,14 @@ export function AdhkarView() {
     }
   }, []);
 
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   const fetchUserAdhkarState = useCallback(async () => {
     if (!user) return;
     const [favRes, progRes] = await Promise.all([
@@ -67,6 +75,7 @@ export function AdhkarView() {
         .eq('progress_date', todayStr),
     ]);
 
+    if (!isMountedRef.current) return;
     if (!favRes.error && favRes.data) {
       setFavoriteIds(new Set(favRes.data.map((r) => r.adhkar_item_id)));
     }
@@ -78,7 +87,7 @@ export function AdhkarView() {
         countMap[row.adhkar_item_id] = row.count;
       });
       setProgressRows(byItem);
-      setLocalCounts((prev) => ({ ...prev, ...countMap }));
+      setLocalCounts(countMap);
     }
   }, [user, todayStr]);
 
@@ -106,13 +115,12 @@ export function AdhkarView() {
   }, [items, favoritesOnly, favoriteIds, selectedSlug, categoryMap]);
 
   const syncTimersRef = useRef<Record<string, number>>({});
+  const pendingProgressRef = useRef<Record<string, number>>({});
 
-  const persistProgress = (itemId: string, nextCount: number) => {
-    if (!user) return;
-    if (syncTimersRef.current[itemId]) {
-      window.clearTimeout(syncTimersRef.current[itemId]);
-    }
-    syncTimersRef.current[itemId] = window.setTimeout(async () => {
+  const flushProgressItem = useCallback(
+    async (itemId: string, nextCount: number) => {
+      if (!user) return;
+      delete pendingProgressRef.current[itemId];
       const nowIso = new Date().toISOString();
       const { data, error: upsertErr } = await supabase
         .from('user_progress')
@@ -129,6 +137,7 @@ export function AdhkarView() {
         .select('*')
         .single();
 
+      if (!isMountedRef.current) return;
       if (upsertErr) {
         showToast(upsertErr.message, 'error');
         return;
@@ -136,6 +145,31 @@ export function AdhkarView() {
       if (data) {
         setProgressRows((prev) => ({ ...prev, [itemId]: data }));
       }
+    },
+    [user, todayStr, showToast]
+  );
+
+  useEffect(() => {
+    return () => {
+      Object.entries(syncTimersRef.current).forEach(([itemId, timerId]) => {
+        window.clearTimeout(timerId);
+        delete syncTimersRef.current[itemId];
+      });
+      Object.entries(pendingProgressRef.current).forEach(([itemId, count]) => {
+        void flushProgressItem(itemId, count);
+      });
+    };
+  }, [flushProgressItem]);
+
+  const persistProgress = (itemId: string, nextCount: number) => {
+    if (!user) return;
+    pendingProgressRef.current[itemId] = nextCount;
+    if (syncTimersRef.current[itemId]) {
+      window.clearTimeout(syncTimersRef.current[itemId]);
+    }
+    syncTimersRef.current[itemId] = window.setTimeout(() => {
+      delete syncTimersRef.current[itemId];
+      void flushProgressItem(itemId, nextCount);
     }, 250);
   };
 

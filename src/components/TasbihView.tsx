@@ -60,7 +60,48 @@ export function TasbihView() {
     [roundStorageKey]
   );
 
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   const syncTimersRef = useRef<Record<string, number>>({});
+  const pendingTotalsRef = useRef<Record<string, number>>({});
+  const totalCountsRef = useRef<Record<string, number>>({});
+
+  const flushCounterTotal = useCallback(
+    async (counterId: string, nextTotal: number) => {
+      if (!user) return;
+      delete pendingTotalsRef.current[counterId];
+      const { error: updErr } = await supabase
+        .from('tasbih_counters')
+        .update({
+          total_count: nextTotal,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', counterId)
+        .eq('user_id', user.id);
+      if (updErr && isMountedRef.current) {
+        showToast(updErr.message, 'error');
+      }
+    },
+    [user, showToast]
+  );
+
+  useEffect(() => {
+    return () => {
+      Object.entries(syncTimersRef.current).forEach(([counterId, timerId]) => {
+        window.clearTimeout(timerId);
+        delete syncTimersRef.current[counterId];
+      });
+      Object.entries(pendingTotalsRef.current).forEach(([counterId, total]) => {
+        void flushCounterTotal(counterId, total);
+      });
+    };
+  }, [flushCounterTotal]);
 
   const fetchTasbihData = useCallback(async () => {
     if (!user) return;
@@ -85,7 +126,14 @@ export function TasbihView() {
       if (cntRes.error) throw cntRes.error;
       if (sesRes.error) throw sesRes.error;
 
+      if (!isMountedRef.current) return;
       const loadedCounters = cntRes.data ?? [];
+      const totalsMap: Record<string, number> = {};
+      loadedCounters.forEach((c) => {
+        totalsMap[c.id] = c.total_count;
+      });
+      totalCountsRef.current = totalsMap;
+
       setCounters(loadedCounters);
       if (loadedCounters.length > 0) {
         setActiveCounterId((prev) =>
@@ -94,9 +142,13 @@ export function TasbihView() {
       }
       setSessions(sesRes.data ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load Tasbih data');
+      if (isMountedRef.current) {
+        setError(err instanceof Error ? err.message : 'Failed to load Tasbih data');
+      }
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
     }
   }, [user]);
 
@@ -121,31 +173,23 @@ export function TasbihView() {
 
   const queueTotalUpdate = (counterId: string, nextTotal: number) => {
     if (!user) return;
+    pendingTotalsRef.current[counterId] = nextTotal;
     if (syncTimersRef.current[counterId]) {
       window.clearTimeout(syncTimersRef.current[counterId]);
     }
-    syncTimersRef.current[counterId] = window.setTimeout(async () => {
-      const { error: updErr } = await supabase
-        .from('tasbih_counters')
-        .update({
-          total_count: nextTotal,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', counterId)
-        .eq('user_id', user.id);
-      if (updErr) {
-        showToast(updErr.message, 'error');
-      }
+    syncTimersRef.current[counterId] = window.setTimeout(() => {
+      delete syncTimersRef.current[counterId];
+      void flushCounterTotal(counterId, nextTotal);
     }, 350);
   };
 
   const handleIncrement = () => {
     if (!user || !activeCounter) return;
-    const nextRound = (roundCounts[activeCounter.id] ?? 0) + 1;
-    const nextTotal = activeCounter.total_count + 1;
+    const nextTotal = (totalCountsRef.current[activeCounter.id] ?? activeCounter.total_count) + 1;
+    totalCountsRef.current[activeCounter.id] = nextTotal;
 
     setRoundCounts((prev) => {
-      const next = { ...prev, [activeCounter.id]: nextRound };
+      const next = { ...prev, [activeCounter.id]: (prev[activeCounter.id] ?? 0) + 1 };
       persistRoundLocally(next);
       return next;
     });
@@ -169,6 +213,13 @@ export function TasbihView() {
 
     setSavingSession(true);
     const sessionCount = currentCount;
+    const latestTotal = totalCountsRef.current[activeCounter.id] ?? activeCounter.total_count;
+    if (syncTimersRef.current[activeCounter.id]) {
+      window.clearTimeout(syncTimersRef.current[activeCounter.id]);
+      delete syncTimersRef.current[activeCounter.id];
+    }
+    delete pendingTotalsRef.current[activeCounter.id];
+
     try {
       // Flush latest total_count immediately and log session
       const [sesRes, cntRes] = await Promise.all([
@@ -186,7 +237,7 @@ export function TasbihView() {
         supabase
           .from('tasbih_counters')
           .update({
-            total_count: activeCounter.total_count,
+            total_count: latestTotal,
             updated_at: new Date().toISOString(),
           })
           .eq('id', activeCounter.id)
@@ -230,6 +281,9 @@ export function TasbihView() {
         .select('id, user_id, title, dhikr_text_ar, target_count, total_count, is_default, created_at, updated_at');
       if (insErr) throw insErr;
       if (data && data.length > 0) {
+        data.forEach((c) => {
+          totalCountsRef.current[c.id] = c.total_count;
+        });
         setCounters(data);
         setActiveCounterId(data[0].id);
       }
@@ -263,6 +317,7 @@ export function TasbihView() {
         .single();
       if (insErr) throw insErr;
       if (data) {
+        totalCountsRef.current[data.id] = data.total_count;
         setCounters((prev) => [...prev, data]);
         setActiveCounterId(data.id);
       }
@@ -279,6 +334,12 @@ export function TasbihView() {
 
   const handleDeleteCounter = async (counterId: string) => {
     if (!user) return;
+    if (syncTimersRef.current[counterId]) {
+      window.clearTimeout(syncTimersRef.current[counterId]);
+      delete syncTimersRef.current[counterId];
+    }
+    delete pendingTotalsRef.current[counterId];
+    delete totalCountsRef.current[counterId];
     try {
       const { error: delErr } = await supabase
         .from('tasbih_counters')

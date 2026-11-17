@@ -299,22 +299,27 @@ export function HomeDashboard() {
                   </span>
                 </div>
 
-                {data.progressVerse && (
-                  <div className="space-y-2">
-                    <p
-                      dir="rtl"
-                      lang="ar"
-                      className="font-arabic text-2xl sm:text-3xl leading-[2] text-white line-clamp-2"
-                    >
-                      {data.progressVerse.text_uthmani}
-                    </p>
-                    {data.progressVerse.quran_translations?.[0]?.translation_text && (
-                      <p className="text-sm text-[#E2ECE8] line-clamp-2 max-w-2xl">
-                        {data.progressVerse.quran_translations[0].translation_text}
+                {data.progressVerse && (() => {
+                  const translation =
+                    data.progressVerse.quran_translations?.find((tr) => tr.language_code === 'so') ??
+                    data.progressVerse.quran_translations?.[0];
+                  return (
+                    <div className="space-y-2">
+                      <p
+                        dir="rtl"
+                        lang="ar"
+                        className="font-arabic text-2xl sm:text-3xl leading-[2] text-white line-clamp-2"
+                      >
+                        {data.progressVerse.text_uthmani}
                       </p>
-                    )}
-                  </div>
-                )}
+                      {translation?.translation_text && (
+                        <p className="text-sm text-[#E2ECE8] line-clamp-2 max-w-2xl">
+                          {translation.translation_text}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 <div className="pt-1">
                   <button

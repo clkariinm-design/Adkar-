@@ -184,12 +184,13 @@ export function AccountAndRemindersView() {
     if (!user) return;
     setSavingRem(true);
     try {
+      const normalizedTime = `${newRemTime.slice(0, 5)}:00`;
       const { data, error } = await supabase
         .from('reminders')
         .insert({
           user_id: user.id,
           reminder_type: newRemType,
-          reminder_time: `${newRemTime}:00`,
+          reminder_time: normalizedTime,
           timezone,
           weekdays: newRemDays.length > 0 ? newRemDays : [0, 1, 2, 3, 4, 5, 6],
           is_enabled: true,
@@ -198,7 +199,9 @@ export function AccountAndRemindersView() {
         .single();
       if (error) throw error;
       if (data) {
-        setReminders((prev) => [...prev, data]);
+        setReminders((prev) =>
+          [...prev, data].sort((a, b) => a.reminder_time.localeCompare(b.reminder_time))
+        );
       }
       showToast(t.account.reminderSaved, 'success');
     } catch (err) {
@@ -212,26 +215,29 @@ export function AccountAndRemindersView() {
     if (!user) return;
     const nextVal = !rem.is_enabled;
     setReminders((prev) => prev.map((r) => (r.id === rem.id ? { ...r, is_enabled: nextVal } : r)));
-    const { error } = await supabase
-      .from('reminders')
-      .update({ is_enabled: nextVal, updated_at: new Date().toISOString() })
-      .eq('id', rem.id)
-      .eq('user_id', user.id);
-    if (error) {
+    try {
+      const { error } = await supabase
+        .from('reminders')
+        .update({ is_enabled: nextVal, updated_at: new Date().toISOString() })
+        .eq('id', rem.id)
+        .eq('user_id', user.id);
+      if (error) throw error;
+    } catch (err) {
       setReminders((prev) => prev.map((r) => (r.id === rem.id ? { ...r, is_enabled: !nextVal } : r)));
-      showToast(error.message, 'error');
+      showToast(err instanceof Error ? err.message : 'Error updating reminder', 'error');
     }
   };
 
   const handleDeleteReminder = async (id: string) => {
     if (!user) return;
-    const { error } = await supabase.from('reminders').delete().eq('id', id).eq('user_id', user.id);
-    if (error) {
-      showToast(error.message, 'error');
-      return;
+    try {
+      const { error } = await supabase.from('reminders').delete().eq('id', id).eq('user_id', user.id);
+      if (error) throw error;
+      setReminders((prev) => prev.filter((r) => r.id !== id));
+      showToast(t.account.reminderDeleted, 'info');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Error deleting reminder', 'error');
     }
-    setReminders((prev) => prev.filter((r) => r.id !== id));
-    showToast(t.account.reminderDeleted, 'info');
   };
 
   const timezoneOptions = Array.from(
