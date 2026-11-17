@@ -1,0 +1,6 @@
+{
+  "name": "NUUR",
+  "description": "Barnaamij Islaami ah oo loogu talagalay Qur'aanka Kariimka, Adkaarta maalinlaha ah, Tasbiixda dhijitaalka ah, iyo xasuusinta cibaadada.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
