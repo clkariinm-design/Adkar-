@@ -59,31 +59,12 @@ export function HomeDashboard() {
   const todayStr = getTodayDateString(tz);
 
   const loadDashboard = useCallback(async () => {
+    if (!user) return;
     setLoading(true);
     setError(null);
     try {
-      const { count: surahCount, error: surahCountErr } = await supabase
-        .from('quran_surahs')
-        .select('id', { count: 'exact', head: true });
-
-      if (surahCountErr) throw surahCountErr;
-
-      if (!user) {
-        setData({
-          surahsCount: surahCount ?? 114,
-          progress: null,
-          progressSurah: null,
-          progressVerse: null,
-          dailyGoal: null,
-          adhkarTodayCount: 0,
-          tasbihTodayCount: 0,
-          reminders: [],
-        });
-        setLoading(false);
-        return;
-      }
-
-      const [progRes, goalRes, adhkarRes, tasbihRes, remRes] = await Promise.all([
+      const [surahCountRes, progRes, goalRes, adhkarRes, tasbihRes, remRes] = await Promise.all([
+        supabase.from('quran_surahs').select('id', { count: 'exact', head: true }),
         supabase
           .from('quran_reading_progress')
           .select('user_id, last_surah_id, last_verse_number, last_read_at')
@@ -113,6 +94,13 @@ export function HomeDashboard() {
           .order('reminder_time', { ascending: true }),
       ]);
 
+      if (surahCountRes.error) throw surahCountRes.error;
+      if (progRes.error) throw progRes.error;
+      if (goalRes.error) throw goalRes.error;
+      if (adhkarRes.error) throw adhkarRes.error;
+      if (tasbihRes.error) throw tasbihRes.error;
+      if (remRes.error) throw remRes.error;
+
       let progressSurah: QuranSurah | null = null;
       let progressVerse: QuranVerse | null = null;
 
@@ -140,7 +128,7 @@ export function HomeDashboard() {
       }
 
       setData({
-        surahsCount: surahCount ?? 114,
+        surahsCount: surahCountRes.count ?? 114,
         progress: progRes.data ?? null,
         progressSurah,
         progressVerse,
@@ -166,29 +154,21 @@ export function HomeDashboard() {
     const parsed = Math.max(1, Math.min(10000, parseInt(goalInput, 10) || 33));
     setSavingGoal(true);
     try {
-      if (data.dailyGoal) {
-        const { data: updated, error: updErr } = await supabase
-          .from('daily_goals')
-          .update({ target_count: parsed, updated_at: new Date().toISOString() })
-          .eq('id', data.dailyGoal.id)
-          .eq('user_id', user.id)
-          .select('*')
-          .single();
-        if (updErr) throw updErr;
-        setData((prev) => ({ ...prev, dailyGoal: updated }));
-      } else {
-        const { data: inserted, error: insErr } = await supabase
-          .from('daily_goals')
-          .insert({
+      const { data: saved, error: upsertErr } = await supabase
+        .from('daily_goals')
+        .upsert(
+          {
             user_id: user.id,
             goal_date: todayStr,
             target_count: parsed,
-          })
-          .select('*')
-          .single();
-        if (insErr) throw insErr;
-        setData((prev) => ({ ...prev, dailyGoal: inserted }));
-      }
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'user_id,goal_date' }
+        )
+        .select('*')
+        .single();
+      if (upsertErr) throw upsertErr;
+      setData((prev) => ({ ...prev, dailyGoal: saved }));
       setEditingGoal(false);
       showToast(t.account.dailyGoalSaved, 'success');
     } catch (err) {
@@ -230,7 +210,7 @@ export function HomeDashboard() {
             {profile?.display_name ? `, ${profile.display_name}` : ''}
           </h1>
           <p className="mt-1 text-sm text-[#52635C] dark:text-[#A3B8AF]">
-            {user ? t.home.subtitleSignedIn : t.home.subtitleGuest}
+            {t.home.subtitleSignedIn}
           </p>
         </div>
 
@@ -280,14 +260,13 @@ export function HomeDashboard() {
         </div>
       </div>
 
-      {/* Primary Hero Anchor: Sanctuary Backdrop + Recently Read / Continue Reading */}
+      {/* Primary Hero Anchor: Sanctuary Backdrop + Recently Read Verse */}
       <motion.section
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.25 }}
         className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch"
       >
-        {/* Left/Main Feature Card: Sanctuary Banner + Recently Read Verse */}
         <div className="lg:col-span-8 relative overflow-hidden rounded-2xl border border-[#E5DFD3] dark:border-[#1B3A2F] bg-[#064E3B] text-[#FAF8F3] min-h-[260px] flex flex-col justify-end">
           {!heroImgFailed ? (
             <img
@@ -353,12 +332,14 @@ export function HomeDashboard() {
                 <div className="flex items-center gap-2 text-xs font-medium text-[#E6CFA0]">
                   <span>{t.appName}</span>
                   <span aria-hidden="true">·</span>
-                  <span>{data.surahsCount} {t.quran.versesLabel ? t.home.surahsCountLabel : ''}</span>
+                  <span>
+                    {data.surahsCount} {t.home.surahsCountLabel}
+                  </span>
                 </div>
                 <h2 className="font-display text-2xl sm:text-3xl font-semibold text-white max-w-xl text-balance">
                   {t.home.noProgressYet}
                 </h2>
-                <div className="pt-1 flex flex-wrap items-center gap-3">
+                <div className="pt-1">
                   <button
                     type="button"
                     onClick={() => openQuranAt(1, 1)}
@@ -367,15 +348,6 @@ export function HomeDashboard() {
                     <span>{t.home.startQuran}</span>
                     <ArrowRight className="w-4 h-4" />
                   </button>
-                  {!user && (
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab('account')}
-                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/15 text-white font-medium text-sm hover:bg-white/25 transition-colors backdrop-blur-sm whitespace-nowrap"
-                    >
-                      <span>{t.common.signIn}</span>
-                    </button>
-                  )}
                 </div>
               </div>
             )}
@@ -396,84 +368,72 @@ export function HomeDashboard() {
             </div>
           </div>
 
-          {user ? (
-            <>
-              <div className="space-y-3">
-                <div className="flex items-baseline justify-between">
-                  <span className="text-3xl font-bold tabular-nums text-[#064E3B] dark:text-[#34D399]">
-                    {totalTodayDhikr}
-                  </span>
-                  <span className="text-sm tabular-nums text-[#52635C] dark:text-[#A3B8AF]">
-                    {t.common.of} {targetCount}
-                  </span>
-                </div>
+          <div className="space-y-3">
+            <div className="flex items-baseline justify-between">
+              <span className="text-3xl font-bold tabular-nums text-[#064E3B] dark:text-[#34D399]">
+                {totalTodayDhikr}
+              </span>
+              <span className="text-sm tabular-nums text-[#52635C] dark:text-[#A3B8AF]">
+                {t.common.of} {targetCount}
+              </span>
+            </div>
 
-                <div className="h-2.5 w-full rounded-full bg-[#EFECE4] dark:bg-[#143328] overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-[#064E3B] dark:bg-[#10B981] transition-all duration-300"
-                    style={{ width: `${goalPct}%` }}
-                  />
-                </div>
+            <div className="h-2.5 w-full rounded-full bg-[#EFECE4] dark:bg-[#143328] overflow-hidden">
+              <div
+                className="h-full rounded-full bg-[#064E3B] dark:bg-[#10B981] transition-all duration-300"
+                style={{ width: `${goalPct}%` }}
+              />
+            </div>
 
-                <div className="flex items-center justify-between text-xs text-[#52635C] dark:text-[#8FA89E] tabular-nums">
-                  <span>
-                    {t.home.adhkarTodayLabel}: {data.adhkarTodayCount}
-                  </span>
-                  <span>
-                    {t.home.tasbihTodayLabel}: {data.tasbihTodayCount}
-                  </span>
-                </div>
-              </div>
+            <div className="flex items-center justify-between text-xs text-[#52635C] dark:text-[#8FA89E] tabular-nums">
+              <span>
+                {t.home.adhkarTodayLabel}: {data.adhkarTodayCount}
+              </span>
+              <span>
+                {t.home.tasbihTodayLabel}: {data.tasbihTodayCount}
+              </span>
+            </div>
+          </div>
 
-              {editingGoal ? (
-                <form onSubmit={handleSaveGoal} className="flex items-center gap-2 pt-2 border-t border-[#EFECE4] dark:border-[#18352B]">
-                  <input
-                    type="number"
-                    min={1}
-                    max={10000}
-                    value={goalInput}
-                    onChange={(e) => setGoalInput(e.target.value)}
-                    aria-label={t.home.dailyTargetLabel}
-                    className="w-24 px-3 py-2 text-sm tabular-nums rounded-lg border border-[#D8D0C0] dark:border-[#244A3C] bg-[#FAF8F3] dark:bg-[#071410] text-[#14241E] dark:text-[#F2EFE9]"
-                  />
-                  <button
-                    type="submit"
-                    disabled={savingGoal}
-                    className="px-3 py-2 rounded-lg bg-[#064E3B] text-white text-xs font-medium hover:bg-[#053F30] dark:bg-[#10B981] dark:text-[#071410] inline-flex items-center gap-1"
-                  >
-                    <Check className="w-3.5 h-3.5" />
-                    <span>{t.common.save}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEditingGoal(false)}
-                    className="px-2.5 py-2 text-xs text-[#52635C] dark:text-[#8FA89E] hover:text-[#14241E]"
-                  >
-                    {t.common.cancel}
-                  </button>
-                </form>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setEditingGoal(true)}
-                  className="w-full py-2.5 px-4 rounded-xl border border-[#E5DFD3] dark:border-[#1B3A2F] text-sm font-medium text-[#14241E] dark:text-[#F2EFE9] hover:bg-[#FAF8F3] dark:hover:bg-[#112921] transition-colors inline-flex items-center justify-center gap-2"
-                >
-                  <Edit3 className="w-4 h-4 text-[#B48A3E] dark:text-[#D4AF6A]" />
-                  <span>{t.home.editGoal}</span>
-                </button>
-              )}
-            </>
-          ) : (
-            <div className="space-y-4">
-              <p className="text-sm text-[#52635C] dark:text-[#A3B8AF]">{t.common.signInRequiredDesc}</p>
+          {editingGoal ? (
+            <form
+              onSubmit={handleSaveGoal}
+              className="flex items-center gap-2 pt-2 border-t border-[#EFECE4] dark:border-[#18352B]"
+            >
+              <input
+                type="number"
+                min={1}
+                max={10000}
+                value={goalInput}
+                onChange={(e) => setGoalInput(e.target.value)}
+                aria-label={t.home.dailyTargetLabel}
+                className="w-24 px-3 py-2 text-sm tabular-nums rounded-lg border border-[#D8D0C0] dark:border-[#244A3C] bg-[#FAF8F3] dark:bg-[#071410] text-[#14241E] dark:text-[#F2EFE9]"
+              />
+              <button
+                type="submit"
+                disabled={savingGoal}
+                className="px-3 py-2 rounded-lg bg-[#064E3B] text-white text-xs font-medium hover:bg-[#053F30] dark:bg-[#10B981] dark:text-[#071410] inline-flex items-center gap-1"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>{t.common.save}</span>
+              </button>
               <button
                 type="button"
-                onClick={() => setActiveTab('account')}
-                className="w-full py-2.5 px-4 rounded-xl bg-[#064E3B] text-white dark:bg-[#10B981] dark:text-[#071410] text-sm font-medium hover:opacity-95 transition-opacity"
+                onClick={() => setEditingGoal(false)}
+                className="px-2.5 py-2 text-xs text-[#52635C] dark:text-[#8FA89E] hover:text-[#14241E]"
               >
-                {t.common.goToAccount}
+                {t.common.cancel}
               </button>
-            </div>
+            </form>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setEditingGoal(true)}
+              className="w-full py-2.5 px-4 rounded-xl border border-[#E5DFD3] dark:border-[#1B3A2F] text-sm font-medium text-[#14241E] dark:text-[#F2EFE9] hover:bg-[#FAF8F3] dark:hover:bg-[#112921] transition-colors inline-flex items-center justify-center gap-2"
+            >
+              <Edit3 className="w-4 h-4 text-[#B48A3E] dark:text-[#D4AF6A]" />
+              <span>{t.home.editGoal}</span>
+            </button>
           )}
         </div>
       </motion.section>
@@ -553,7 +513,7 @@ export function HomeDashboard() {
                 <Compass className="w-5 h-5" />
               </div>
               <span className="text-xs font-medium tabular-nums text-[#52635C] dark:text-[#8FA89E]">
-                {user ? `${data.tasbihTodayCount} ${t.common.today}` : t.nav.tasbih}
+                {data.tasbihTodayCount} {t.common.today}
               </span>
             </div>
             <div>
@@ -586,9 +546,7 @@ export function HomeDashboard() {
           </button>
         </div>
 
-        {!user ? (
-          <p className="pt-4 text-sm text-[#52635C] dark:text-[#A3B8AF]">{t.common.signInRequiredDesc}</p>
-        ) : data.reminders.length === 0 ? (
+        {data.reminders.length === 0 ? (
           <p className="pt-4 text-sm text-[#52635C] dark:text-[#A3B8AF]">{t.home.noReminders}</p>
         ) : (
           <div className="divide-y divide-[#EFECE4] dark:divide-[#18352B]">

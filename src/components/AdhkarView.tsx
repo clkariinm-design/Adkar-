@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ExternalLink, Heart, RotateCcw, Check } from 'lucide-react';
 import { useApp } from '../contexts/AppContext';
 import {
@@ -10,7 +10,7 @@ import {
 import { getTodayDateString } from '../lib/i18n';
 
 export function AdhkarView() {
-  const { user, profile, lang, t, setActiveTab, showToast } = useApp();
+  const { user, profile, lang, t, showToast } = useApp();
 
   const [categories, setCategories] = useState<AdhkarCategory[]>([]);
   const [items, setItems] = useState<AdhkarItem[]>([]);
@@ -57,11 +57,7 @@ export function AdhkarView() {
   }, []);
 
   const fetchUserAdhkarState = useCallback(async () => {
-    if (!user) {
-      setFavoriteIds(new Set());
-      setProgressRows({});
-      return;
-    }
+    if (!user) return;
     const [favRes, progRes] = await Promise.all([
       supabase.from('favorites').select('adhkar_item_id').eq('user_id', user.id),
       supabase
@@ -109,41 +105,38 @@ export function AdhkarView() {
     });
   }, [items, favoritesOnly, favoriteIds, selectedSlug, categoryMap]);
 
-  const persistProgress = async (itemId: string, nextCount: number) => {
+  const syncTimersRef = useRef<Record<string, number>>({});
+
+  const persistProgress = (itemId: string, nextCount: number) => {
     if (!user) return;
-    const existing = progressRows[itemId];
-    const nowIso = new Date().toISOString();
-    try {
-      if (existing) {
-        const { data, error: updErr } = await supabase
-          .from('user_progress')
-          .update({ count: nextCount, updated_at: nowIso })
-          .eq('id', existing.id)
-          .eq('user_id', user.id)
-          .select('*')
-          .single();
-        if (!updErr && data) {
-          setProgressRows((prev) => ({ ...prev, [itemId]: data }));
-        }
-      } else {
-        const { data, error: insErr } = await supabase
-          .from('user_progress')
-          .insert({
+    if (syncTimersRef.current[itemId]) {
+      window.clearTimeout(syncTimersRef.current[itemId]);
+    }
+    syncTimersRef.current[itemId] = window.setTimeout(async () => {
+      const nowIso = new Date().toISOString();
+      const { data, error: upsertErr } = await supabase
+        .from('user_progress')
+        .upsert(
+          {
             user_id: user.id,
             adhkar_item_id: itemId,
             progress_date: todayStr,
             count: nextCount,
             updated_at: nowIso,
-          })
-          .select('*')
-          .single();
-        if (!insErr && data) {
-          setProgressRows((prev) => ({ ...prev, [itemId]: data }));
-        }
+          },
+          { onConflict: 'user_id,adhkar_item_id,progress_date' }
+        )
+        .select('*')
+        .single();
+
+      if (upsertErr) {
+        showToast(upsertErr.message, 'error');
+        return;
       }
-    } catch {
-      // Keep optimistic UI count responsive
-    }
+      if (data) {
+        setProgressRows((prev) => ({ ...prev, [itemId]: data }));
+      }
+    }, 250);
   };
 
   const handleTapCount = (item: AdhkarItem) => {
@@ -159,12 +152,7 @@ export function AdhkarView() {
   };
 
   const handleToggleFavorite = async (itemId: string) => {
-    if (!user) {
-      showToast(t.common.signInRequiredTitle, 'info');
-      setActiveTab('account');
-      return;
-    }
-
+    if (!user) return;
     const isFav = favoriteIds.has(itemId);
     try {
       if (isFav) {
@@ -207,14 +195,7 @@ export function AdhkarView() {
 
         <button
           type="button"
-          onClick={() => {
-            if (!user) {
-              showToast(t.common.signInRequiredTitle, 'info');
-              setActiveTab('account');
-              return;
-            }
-            setFavoritesOnly((v) => !v);
-          }}
+          onClick={() => setFavoritesOnly((v) => !v)}
           className={`self-start md:self-auto px-4 py-2 rounded-xl border text-xs font-semibold inline-flex items-center gap-2 transition-colors whitespace-nowrap ${
             favoritesOnly
               ? 'bg-[#064E3B] text-white border-[#064E3B] dark:bg-[#10B981] dark:text-[#071410] dark:border-[#10B981]'
@@ -223,11 +204,10 @@ export function AdhkarView() {
         >
           <Heart className={`w-3.5 h-3.5 ${favoritesOnly ? 'fill-current' : ''}`} />
           <span>{t.adhkar.favoritesOnly}</span>
-          {user && favoriteIds.size > 0 && <span className="tabular-nums">({favoriteIds.size})</span>}
+          {favoriteIds.size > 0 && <span className="tabular-nums">({favoriteIds.size})</span>}
         </button>
       </div>
 
-      {/* Category Filter Tabs */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1">
         <button
           type="button"
@@ -301,7 +281,6 @@ export function AdhkarView() {
                 className="rounded-2xl border border-[#E5DFD3] dark:border-[#1B3A2F] bg-white dark:bg-[#0C1F19] p-6 flex flex-col justify-between gap-5"
               >
                 <div className="space-y-4">
-                  {/* Top unboxed metadata & Favorite button */}
                   <div className="flex items-start justify-between gap-3">
                     <div className="text-xs text-[#52635C] dark:text-[#8FA89E] flex flex-wrap items-center gap-1.5">
                       {cat && (
@@ -337,7 +316,6 @@ export function AdhkarView() {
                     </button>
                   </div>
 
-                  {/* Arabic Text */}
                   <p
                     dir="rtl"
                     lang="ar"
@@ -346,7 +324,6 @@ export function AdhkarView() {
                     {item.content_ar}
                   </p>
 
-                  {/* Transliteration & Somali Translation */}
                   <div className="space-y-2 pt-1">
                     {item.transliteration && (
                       <p className="text-xs font-medium text-[#7A6334] dark:text-[#D4AF6A]">
@@ -380,7 +357,6 @@ export function AdhkarView() {
                   </div>
                 </div>
 
-                {/* Repeat Counter Footer */}
                 <div className="pt-4 border-t border-[#EFECE4] dark:border-[#18352B] space-y-3">
                   <div className="h-1.5 w-full rounded-full bg-[#EFECE4] dark:bg-[#143328] overflow-hidden">
                     <div

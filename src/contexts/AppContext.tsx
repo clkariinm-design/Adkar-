@@ -1,5 +1,7 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
+import { Capacitor } from '@capacitor/core';
+import { App as CapApp } from '@capacitor/app';
 import { supabase, type Profile } from '../lib/supabase';
 import { translations, type AppLang, type Translations } from '../lib/i18n';
 
@@ -18,10 +20,18 @@ export interface ToastMessage {
   tone: 'success' | 'error' | 'info';
 }
 
+interface StartSessionResult {
+  ok: boolean;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
 interface AppContextValue {
   user: User | null;
   session: Session | null;
   authLoading: boolean;
+  startingSession: boolean;
+  startAnonymousSession: () => Promise<StartSessionResult>;
   profile: Profile | null;
   refreshProfile: () => Promise<void>;
   lang: AppLang;
@@ -37,7 +47,7 @@ interface AppContextValue {
   toast: ToastMessage | null;
   showToast: (text: string, tone?: 'success' | 'error' | 'info') => void;
   clearToast: () => void;
-  signOut: () => Promise<void>;
+  registerBackHandler: (handler: () => boolean) => () => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -49,6 +59,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [startingSession, setStartingSession] = useState(false);
   const [profile, setProfile] = useState<Profile | null>(null);
 
   const [lang, setLangState] = useState<AppLang>(() => {
@@ -72,6 +83,44 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [activeTab, setActiveTab] = useState<NavTab>('home');
   const [targetVerse, setTargetVerse] = useState<TargetVerseJump | null>(null);
   const [toast, setToast] = useState<ToastMessage | null>(null);
+  const backHandlersRef = useRef<Set<() => boolean>>(new Set());
+
+  const registerBackHandler = useCallback((handler: () => boolean) => {
+    backHandlersRef.current.add(handler);
+    return () => {
+      backHandlersRef.current.delete(handler);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    let removeListener: (() => void) | undefined;
+
+    CapApp.addListener('backButton', ({ canGoBack }) => {
+      // Give active sub-views/modals first chance to consume the back press
+      const handlers = Array.from(backHandlersRef.current);
+      for (let i = handlers.length - 1; i >= 0; i -= 1) {
+        if (handlers[i]()) {
+          return;
+        }
+      }
+      if (activeTab !== 'home') {
+        setActiveTab('home');
+        return;
+      }
+      if (canGoBack) {
+        window.history.back();
+        return;
+      }
+      CapApp.exitApp();
+    }).then((handle) => {
+      removeListener = () => handle.remove();
+    });
+
+    return () => {
+      if (removeListener) removeListener();
+    };
+  }, [activeTab]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -110,15 +159,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  const loadOrCreateProfile = useCallback(async (currentUser: User) => {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('id, display_name, locale, timezone, created_at, updated_at')
-      .eq('id', currentUser.id)
-      .maybeSingle();
+  // Load the profile created by the existing database trigger (with short retry if trigger just fired)
+  const loadProfileFromTrigger = useCallback(async (currentUser: User) => {
+    const fetchProfile = async () => {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, display_name, locale, timezone, created_at, updated_at')
+        .eq('id', currentUser.id)
+        .maybeSingle();
+      if (error) return null;
+      return data;
+    };
 
-    if (error) {
-      return;
+    let data = await fetchProfile();
+    if (!data) {
+      // Wait briefly for DB trigger on auth.users if just created
+      await new Promise((r) => window.setTimeout(r, 400));
+      data = await fetchProfile();
     }
 
     if (data) {
@@ -126,51 +183,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (data.locale === 'en' || data.locale === 'so') {
         setLangState(data.locale);
       }
-      return;
     }
-
-    const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-    const metaName =
-      typeof currentUser.user_metadata?.display_name === 'string'
-        ? currentUser.user_metadata.display_name
-        : currentUser.email?.split('@')[0] ?? null;
-
-    const { data: inserted } = await supabase
-      .from('profiles')
-      .upsert(
-        {
-          id: currentUser.id,
-          display_name: metaName,
-          locale: lang,
-          timezone: browserTz,
-        },
-        { onConflict: 'id' }
-      )
-      .select('id, display_name, locale, timezone, created_at, updated_at')
-      .maybeSingle();
-
-    if (inserted) {
-      setProfile(inserted);
-    }
-  }, [lang]);
+  }, []);
 
   const refreshProfile = useCallback(async () => {
     if (!user) {
       setProfile(null);
       return;
     }
-    await loadOrCreateProfile(user);
-  }, [user, loadOrCreateProfile]);
+    await loadProfileFromTrigger(user);
+  }, [user, loadProfileFromTrigger]);
 
+  // Restore existing session on app open; never auto-create a new anonymous account on page load
   useEffect(() => {
     let mounted = true;
+
     supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
       setSession(data.session);
       setUser(data.session?.user ?? null);
       setAuthLoading(false);
       if (data.session?.user) {
-        loadOrCreateProfile(data.session.user);
+        loadProfileFromTrigger(data.session.user);
       }
     });
 
@@ -180,7 +214,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setUser(nextSession?.user ?? null);
       setAuthLoading(false);
       if (nextSession?.user) {
-        loadOrCreateProfile(nextSession.user);
+        loadProfileFromTrigger(nextSession.user);
       } else {
         setProfile(null);
       }
@@ -190,7 +224,57 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       mounted = false;
       listener.subscription.unsubscribe();
     };
-  }, [loadOrCreateProfile]);
+  }, [loadProfileFromTrigger]);
+
+  const startAnonymousSession = useCallback(async (): Promise<StartSessionResult> => {
+    setStartingSession(true);
+    try {
+      // Ensure we do not create a duplicate anonymous user if a session already exists
+      const { data: existing } = await supabase.auth.getSession();
+      if (existing.session?.user) {
+        setSession(existing.session);
+        setUser(existing.session.user);
+        await loadProfileFromTrigger(existing.session.user);
+        setActiveTab('home');
+        return { ok: true };
+      }
+
+      const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      const { data, error } = await supabase.auth.signInAnonymously({
+        options: {
+          data: {
+            locale: lang,
+            timezone: browserTz,
+          },
+        },
+      });
+
+      if (error) {
+        return {
+          ok: false,
+          errorCode: (error as { code?: string }).code || String(error.status ?? ''),
+          errorMessage: error.message,
+        };
+      }
+
+      if (data.session?.user) {
+        setSession(data.session);
+        setUser(data.session.user);
+        await loadProfileFromTrigger(data.session.user);
+        setActiveTab('home');
+        return { ok: true };
+      }
+
+      return { ok: false, errorMessage: 'No session returned from Supabase.' };
+    } catch (err) {
+      return {
+        ok: false,
+        errorMessage: err instanceof Error ? err.message : 'Unable to start session.',
+      };
+    } finally {
+      setStartingSession(false);
+    }
+  }, [lang, loadProfileFromTrigger]);
 
   const setLang = useCallback(
     (nextLang: AppLang) => {
@@ -221,19 +305,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setActiveTab('quran');
   }, []);
 
-  const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
-    setProfile(null);
-    setUser(null);
-    setSession(null);
-  }, []);
-
   return (
     <AppContext.Provider
       value={{
         user,
         session,
         authLoading,
+        startingSession,
+        startAnonymousSession,
         profile,
         refreshProfile,
         lang,
@@ -249,7 +328,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         toast,
         showToast,
         clearToast,
-        signOut,
+        registerBackHandler,
       }}
     >
       {children}

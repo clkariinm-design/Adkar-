@@ -2,6 +2,18 @@ export type AppLang = 'so' | 'en';
 
 export interface Translations {
   appName: string;
+  welcome: {
+    bismillah: string;
+    greeting: string;
+    subtitle: string;
+    featureQuran: string;
+    featureAdhkar: string;
+    featureTasbih: string;
+    cta: string;
+    starting: string;
+    anonDisabledTitle: string;
+    anonDisabledDesc: string;
+  };
   nav: {
     home: string;
     quran: string;
@@ -10,9 +22,6 @@ export interface Translations {
     account: string;
   };
   common: {
-    signIn: string;
-    signUp: string;
-    signOut: string;
     save: string;
     cancel: string;
     delete: string;
@@ -31,15 +40,11 @@ export interface Translations {
     darkMode: string;
     somali: string;
     english: string;
-    signInRequiredTitle: string;
-    signInRequiredDesc: string;
-    goToAccount: string;
     today: string;
     of: string;
   };
   home: {
     salam: string;
-    subtitleGuest: string;
     subtitleSignedIn: string;
     resumeReading: string;
     noProgressYet: string;
@@ -114,6 +119,8 @@ export interface Translations {
     selectCounter: string;
     newCounter: string;
     counterTitlePlaceholder: string;
+    arabicOptionalLabel: string;
+    arabicPlaceholder: string;
     targetLabel: string;
     createCounter: string;
     tapToIncrement: string;
@@ -126,21 +133,16 @@ export interface Translations {
     noHistory: string;
     noCounters: string;
     loadPresets: string;
-    guestNotice: string;
     deleteCounter: string;
     targetReached: string;
   };
   account: {
     title: string;
+    subtitle: string;
     tabProfile: string;
     tabReminders: string;
-    emailLabel: string;
-    passwordLabel: string;
     displayNameLabel: string;
     displayNamePlaceholder: string;
-    haveAccount: string;
-    needAccount: string;
-    checkEmailNotice: string;
     profileSectionTitle: string;
     languageLabel: string;
     timezoneLabel: string;
@@ -174,17 +176,28 @@ export interface Translations {
 export const translations: Record<AppLang, Translations> = {
   so: {
     appName: 'NUUR',
+    welcome: {
+      bismillah: 'بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ',
+      greeting: 'Assalaamu Calaykum, Ku Soo Dhawoow NUUR',
+      subtitle:
+        'Hoygaaga deggan ee Qur’aanka Kariimka, Adkaarta sugan, Tasbiixda dhijitaalka ah iyo xasuusinta cibaadada — bilaa diiwaangelin iyo erey sir ah.',
+      featureQuran: '114 Suuradood & Tarjumaad Soomaali ah',
+      featureAdhkar: 'Adkaarta Subaxda, Fiidka & Salaadda Kadib',
+      featureTasbih: 'Tasbiix Dhijitaal ah & Kaydinta Horumarka',
+      cta: 'Bilow isticmaalka',
+      starting: 'Waa la diyaarinayaa...',
+      anonDisabledTitle: 'Gelitaanka degdegga ah (Anonymous Auth) weli ma furmin',
+      anonDisabledDesc:
+        'Mashruuca Supabase (krhuhunxxogrvhohjljh) hadda kama shidna "Allow anonymous sign-ins". Fadlan ka shid Supabase Dashboard -> Authentication -> Providers/Settings si aad u bilowdo.',
+    },
     nav: {
       home: 'Hoyga',
       quran: "Qur'aanka",
       adhkar: 'Adkaarta',
       tasbih: 'Tasbiixda',
-      account: 'Xisaabta',
+      account: 'Dejinta',
     },
     common: {
-      signIn: 'Soo Gal',
-      signUp: 'Isdiiwaangeli',
-      signOut: 'Ka Bax',
       save: 'Kaydi',
       cancel: 'Jooji',
       delete: 'Tirtir',
@@ -203,15 +216,11 @@ export const translations: Record<AppLang, Translations> = {
       darkMode: 'Mugdi',
       somali: 'Soomaali',
       english: 'English',
-      signInRequiredTitle: 'Soo gal si aad u kaydiso horumarkaaga',
-      signInRequiredDesc: 'Calaamadaha Qur’aanka, adkaarta aad jeceshahay, tasbiixda iyo yoolalkaaga waxay ku kaydsan yihiin akoonkaaga gaarka ah.',
-      goToAccount: 'Tag Soo Galitaanka',
       today: 'Maanta',
       of: 'ka mid ah',
     },
     home: {
       salam: 'Assalaamu Calaykum',
-      subtitleGuest: 'Ku soo dhawoow NUUR — Hoyga Qur’aanka, Adkaarta iyo Tasbiixda.',
       subtitleSignedIn: 'Ku soo dhawoow NUUR. Sii wad akhrintaada iyo dikriga maanta.',
       resumeReading: 'Sii Wad Akhrinta',
       noProgressYet: 'Weli ma aadan bilaabin akhrinta Qur’aanka.',
@@ -282,10 +291,12 @@ export const translations: Record<AppLang, Translations> = {
     },
     tasbih: {
       title: 'Tasbiixda Dhijitaalka Ah',
-      subtitle: 'Ku tiri dikrigaaga bartilmaameed qeexan, una kaydi fadhiyadaada akoonkaaga.',
+      subtitle: 'Ku tiri dikrigaaga bartilmaameed qeexan, una kaydi fadhiyadaada si joogto ah.',
       selectCounter: 'Dooro Dikri',
       newCounter: 'Dikri Cusub',
       counterTitlePlaceholder: 'Tusaale: SubhanAllah',
+      arabicOptionalLabel: 'Qoraalka Carabiga (Ikhtiyaari)',
+      arabicPlaceholder: 'Tusaale: سُبْحَانَ اللَّهِ',
       targetLabel: 'Bartilmaameedka',
       createCounter: 'Abuur Dikri',
       tapToIncrement: 'Taabo si aad u tiriso',
@@ -298,34 +309,30 @@ export const translations: Record<AppLang, Translations> = {
       noHistory: 'Weli ma jiro fadhi tasbiix ah oo la kaydiyay.',
       noCounters: 'Weli ma aadan samaysan miiska tasbiixda.',
       loadPresets: 'Ku Dar Dikriyada Caanka Ah',
-      guestNotice: 'Waxaad u tirinaysaa si ku meel gaar ah. Soo gal si aad u kaydiso taariikhda iyo tiriyeyaasha gaarka ah.',
       deleteCounter: 'Tirtir Tiriyaha',
       targetReached: 'Bartilmaameedka waa la gaaray',
     },
     account: {
-      title: 'Xisaabta & Xasuusinta',
-      tabProfile: 'Akoonka & Yoolka',
+      title: 'Dejinta & Xasuusinta',
+      subtitle: 'Horumarkaaga, yoolka maalinlaha ah iyo xasuusinta waxay si gaar ah ugu kaydsan yihiin qalabkan.',
+      tabProfile: 'Dejinta & Yoolka',
       tabReminders: 'Xasuusinta',
-      emailLabel: 'Iimaylka',
-      passwordLabel: 'Furaha Sirta',
-      displayNameLabel: 'Magacaaga',
-      displayNamePlaceholder: 'Magaca buuxa ama naanaysta',
-      haveAccount: 'Akoon hore ma u leedahay? Soo gal',
-      needAccount: 'Akoon cusub ma rabtaa? Isdiiwaangeli',
-      checkEmailNotice: 'Fadlan hubi iimaylkaaga si aad u xaqiijiso akoonkaaga ka hor intaadan soo gelin.',
-      profileSectionTitle: 'Macluumaadka Gaarka Ah',
+      displayNameLabel: 'Magaca (Ikhtiyaari)',
+      displayNamePlaceholder: 'Magacaaga haddii aad rabto',
+      profileSectionTitle: 'Doorbidyada Gaarka Ah',
       languageLabel: 'Luuqadda Barnaamijka',
       timezoneLabel: 'Aagga Waqtiga (Timezone)',
       useDeviceTimezone: 'Adeegso Waqtiga Qalabka',
-      profileSaved: 'Xogta akoonka waa la cusboonaysiiyay.',
+      profileSaved: 'Doorbidyada waa la kaydiyay.',
       dailyGoalTitle: 'Yoolka Maanta',
-      dailyGoalDesc: 'Deji tirada guud ee dikriga/aayadaha aad rabto inaad maanta gaarto.',
+      dailyGoalDesc: 'Deji tirada guud ee dikriga aad rabto inaad maanta gaarto.',
       dailyGoalSaved: 'Yoolka maanta waa la kaydiyay.',
       statsBookmarks: 'Aayado Calaamadaysan',
       statsFavorites: 'Adkaar La Jecel Yahay',
       statsTasbih: 'Fadhiyada Tasbiixda',
       remindersTitle: 'Jadwalka Xasuusinta',
-      remindersHonestNote: 'Jadwalka xasuusinta waxaa lagu kaydiyaa akoonkaaga iyadoo la raacayo aagga waqtigaaga. Xasuusinaha waqtigoodu dhow yahay waxay ka muuqan doonaan barnaamijka gudihiisa marka uu furan yahay.',
+      remindersHonestNote:
+        'Jadwalka xasuusinta waxaa lagu kaydiyaa xisaabtaada iyadoo la raacayo aagga waqtigaaga. Xasuusinaha waqtigoodu dhow yahay waxay ka muuqan doonaan barnaamijka gudihiisa marka uu furan yahay.',
       addReminder: 'Ku Dar Xasuusin',
       reminderTypeLabel: 'Nooca Xasuusinta',
       reminderTimeLabel: 'Saacadda',
@@ -344,17 +351,28 @@ export const translations: Record<AppLang, Translations> = {
   },
   en: {
     appName: 'NUUR',
+    welcome: {
+      bismillah: 'بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ',
+      greeting: 'Assalamu Alaykum, Welcome to NUUR',
+      subtitle:
+        'Your tranquil companion for the Holy Quran, authentic daily Adhkar, Digital Tasbih, and worship reminders — with no registration or password required.',
+      featureQuran: 'All 114 Surahs & Somali Translation',
+      featureAdhkar: 'Morning, Evening & After-Prayer Adhkar',
+      featureTasbih: 'Digital Tasbih & Saved Progress',
+      cta: 'Bilow isticmaalka',
+      starting: 'Preparing your space...',
+      anonDisabledTitle: 'Anonymous sign-ins are disabled in Supabase',
+      anonDisabledDesc:
+        'The Supabase project (krhuhunxxogrvhohjljh) currently has "Allow anonymous sign-ins" disabled. Enable it in Supabase Dashboard -> Authentication -> Settings, then try again.',
+    },
     nav: {
       home: 'Home',
       quran: 'Quran',
       adhkar: 'Adhkar',
       tasbih: 'Tasbih',
-      account: 'Account',
+      account: 'Settings',
     },
     common: {
-      signIn: 'Sign In',
-      signUp: 'Sign Up',
-      signOut: 'Sign Out',
       save: 'Save',
       cancel: 'Cancel',
       delete: 'Delete',
@@ -373,16 +391,12 @@ export const translations: Record<AppLang, Translations> = {
       darkMode: 'Dark',
       somali: 'Soomaali',
       english: 'English',
-      signInRequiredTitle: 'Sign in to save your progress',
-      signInRequiredDesc: 'Your Quran bookmarks, favorite Adhkar, Tasbih sessions, and daily goals are privately stored in your account.',
-      goToAccount: 'Go to Sign In',
       today: 'Today',
       of: 'of',
     },
     home: {
       salam: 'Assalamu Alaykum',
-      subtitleGuest: 'Welcome to NUUR — Your companion for the Holy Quran, Adhkar, and Tasbih.',
-      subtitleSignedIn: 'Welcome back to NUUR. Continue your Quran reading and daily remembrance.',
+      subtitleSignedIn: 'Welcome to NUUR. Continue your Quran reading and daily remembrance.',
       resumeReading: 'Resume Reading',
       noProgressYet: 'You have not started reading the Quran yet.',
       startQuran: 'Start Surah Al-Faatiha',
@@ -452,10 +466,12 @@ export const translations: Record<AppLang, Translations> = {
     },
     tasbih: {
       title: 'Digital Tasbih',
-      subtitle: 'Count your dhikr with custom targets and save sessions to your account.',
+      subtitle: 'Count your dhikr with custom targets and save sessions automatically.',
       selectCounter: 'Select Dhikr',
       newCounter: 'New Dhikr',
       counterTitlePlaceholder: 'e.g. SubhanAllah',
+      arabicOptionalLabel: 'Arabic Text (Optional)',
+      arabicPlaceholder: 'e.g. سُبْحَانَ اللَّهِ',
       targetLabel: 'Target Count',
       createCounter: 'Create Counter',
       tapToIncrement: 'Tap to count',
@@ -468,34 +484,30 @@ export const translations: Record<AppLang, Translations> = {
       noHistory: 'No saved Tasbih sessions yet.',
       noCounters: 'No Tasbih counters created yet.',
       loadPresets: 'Add Standard Presets',
-      guestNotice: 'Counting locally in this session. Sign in to save custom counters and session history.',
       deleteCounter: 'Delete Counter',
       targetReached: 'Target reached',
     },
     account: {
-      title: 'Account & Reminders',
-      tabProfile: 'Profile & Goals',
+      title: 'Preferences & Reminders',
+      subtitle: 'Your progress, bookmarks, daily goals, and reminders are privately saved to your device session.',
+      tabProfile: 'Preferences & Goal',
       tabReminders: 'Reminders',
-      emailLabel: 'Email Address',
-      passwordLabel: 'Password',
-      displayNameLabel: 'Display Name',
-      displayNamePlaceholder: 'Your name',
-      haveAccount: 'Already have an account? Sign in',
-      needAccount: 'Need an account? Create one',
-      checkEmailNotice: 'Please check your email inbox to confirm your account before signing in.',
+      displayNameLabel: 'Name (Optional)',
+      displayNamePlaceholder: 'Optional display name',
       profileSectionTitle: 'Personal Preferences',
       languageLabel: 'Interface Language',
       timezoneLabel: 'Timezone',
       useDeviceTimezone: 'Use Device Timezone',
-      profileSaved: 'Profile settings saved.',
+      profileSaved: 'Preferences saved.',
       dailyGoalTitle: 'Daily Goal',
-      dailyGoalDesc: 'Set your combined daily dhikr and reading target for today.',
+      dailyGoalDesc: 'Set your combined daily dhikr target for today.',
       dailyGoalSaved: 'Daily goal saved.',
       statsBookmarks: 'Bookmarked Verses',
       statsFavorites: 'Favorite Adhkar',
       statsTasbih: 'Tasbih Sessions',
       remindersTitle: 'Reminder Schedules',
-      remindersHonestNote: 'Reminder schedules are saved in your account with timezone and weekday rules. Due reminders are highlighted in-app while NUUR is open.',
+      remindersHonestNote:
+        'Reminder schedules are saved with timezone and weekday rules. Due reminders are highlighted in-app while NUUR is open.',
       addReminder: 'Add Reminder',
       reminderTypeLabel: 'Reminder Type',
       reminderTimeLabel: 'Time',

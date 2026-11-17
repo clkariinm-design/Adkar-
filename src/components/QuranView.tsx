@@ -42,7 +42,7 @@ function toArabicIndicDigits(num: number): string {
 }
 
 export function QuranView() {
-  const { user, lang, t, targetVerse, openQuranAt, setActiveTab, showToast } = useApp();
+  const { user, lang, t, targetVerse, openQuranAt, showToast, registerBackHandler } = useApp();
 
   const [mode, setMode] = useState<QuranMode>('surahs');
   const [surahs, setSurahs] = useState<QuranSurah[]>([]);
@@ -80,7 +80,24 @@ export function QuranView() {
 
   const pendingScrollVerseRef = useRef<number | null>(null);
 
-  // Load all 114 Surahs
+  useEffect(() => {
+    return registerBackHandler(() => {
+      if (editingBookmarkVerse) {
+        setEditingBookmarkVerse(null);
+        return true;
+      }
+      if (mode !== 'surahs') {
+        setMode('surahs');
+        return true;
+      }
+      if (mobileReaderOpen) {
+        setMobileReaderOpen(false);
+        return true;
+      }
+      return false;
+    });
+  }, [registerBackHandler, editingBookmarkVerse, mode, mobileReaderOpen]);
+
   const fetchSurahs = useCallback(async () => {
     setSurahsLoading(true);
     setSurahsError(null);
@@ -102,13 +119,8 @@ export function QuranView() {
     fetchSurahs();
   }, [fetchSurahs]);
 
-  // Load user's reading progress and bookmarks
   const fetchUserQuranData = useCallback(async () => {
-    if (!user) {
-      setReadingProgress(null);
-      setBookmarks([]);
-      return;
-    }
+    if (!user) return;
     setBookmarksLoading(true);
     try {
       const [progRes, bmRes] = await Promise.all([
@@ -140,7 +152,6 @@ export function QuranView() {
     fetchUserQuranData();
   }, [fetchUserQuranData]);
 
-  // Handle jump requests from Home Dashboard / Search / Bookmarks
   useEffect(() => {
     if (!targetVerse) return;
     setMode('surahs');
@@ -166,46 +177,31 @@ export function QuranView() {
       if (!user) return;
       const nowIso = new Date().toISOString();
       try {
-        if (readingProgress) {
-          const { data, error } = await supabase
-            .from('quran_reading_progress')
-            .update({
-              last_surah_id: surahId,
-              last_verse_number: verseNumber,
-              last_read_at: nowIso,
-            })
-            .eq('user_id', user.id)
-            .select('*')
-            .single();
-          if (error) throw error;
-          setReadingProgress(data);
-        } else {
-          const { data, error } = await supabase
-            .from('quran_reading_progress')
-            .insert({
+        const { data, error } = await supabase
+          .from('quran_reading_progress')
+          .upsert(
+            {
               user_id: user.id,
               last_surah_id: surahId,
               last_verse_number: verseNumber,
               last_read_at: nowIso,
-            })
-            .select('*')
-            .single();
-          if (error) throw error;
-          setReadingProgress(data);
-        }
+            },
+            { onConflict: 'user_id' }
+          )
+          .select('*')
+          .single();
+        if (error) throw error;
+        setReadingProgress(data);
         if (showFeedback) {
           showToast(t.quran.lastReadSaved, 'success');
         }
       } catch (err) {
-        if (showFeedback) {
-          showToast(err instanceof Error ? err.message : 'Error saving progress', 'error');
-        }
+        showToast(err instanceof Error ? err.message : 'Error saving progress', 'error');
       }
     },
-    [user, readingProgress, showToast, t.quran.lastReadSaved]
+    [user, showToast, t.quran.lastReadSaved]
   );
 
-  // Fetch paginated verses for activeSurah & page
   const fetchVerses = useCallback(async () => {
     setVersesLoading(true);
     setVersesError(null);
@@ -226,7 +222,6 @@ export function QuranView() {
       const loaded = (data as unknown as QuranVerse[]) ?? [];
       setVerses(loaded);
 
-      // Scroll to target verse if pending
       if (pendingScrollVerseRef.current !== null) {
         const targetNum = pendingScrollVerseRef.current;
         pendingScrollVerseRef.current = null;
@@ -250,7 +245,6 @@ export function QuranView() {
     }
   }, [fetchVerses, mode]);
 
-  // Auto-save reading progress when user switches Surah or page inside reader
   const lastAutoSavedRef = useRef<string>('');
   useEffect(() => {
     if (!user || mode !== 'surahs' || verses.length === 0) return;
@@ -259,7 +253,6 @@ export function QuranView() {
     const key = `${firstVerse.surah_id}:${firstVerse.verse_number}`;
     if (lastAutoSavedRef.current === key) return;
 
-    // Don't overwrite a user's deeper verse progress if they haven't navigated yet on initial mount
     if (
       lastAutoSavedRef.current === '' &&
       readingProgress &&
@@ -308,11 +301,6 @@ export function QuranView() {
   }, [bookmarks]);
 
   const openBookmarkEditor = (verse: QuranVerse) => {
-    if (!user) {
-      showToast(t.common.signInRequiredTitle, 'info');
-      setActiveTab('account');
-      return;
-    }
     const existing = bookmarkedMap.get(verse.id);
     setEditingBookmarkVerse(verse);
     setBookmarkNote(existing?.note ?? '');
@@ -323,22 +311,15 @@ export function QuranView() {
     if (!user || !editingBookmarkVerse) return;
     setSavingBookmark(true);
     try {
-      const existing = bookmarkedMap.get(editingBookmarkVerse.id);
-      if (existing) {
-        const { error } = await supabase
-          .from('quran_bookmarks')
-          .update({ note: bookmarkNote.trim() || null })
-          .eq('user_id', user.id)
-          .eq('verse_id', editingBookmarkVerse.id);
-        if (error) throw error;
-      } else {
-        const { error } = await supabase.from('quran_bookmarks').insert({
+      const { error } = await supabase.from('quran_bookmarks').upsert(
+        {
           user_id: user.id,
           verse_id: editingBookmarkVerse.id,
           note: bookmarkNote.trim() || null,
-        });
-        if (error) throw error;
-      }
+        },
+        { onConflict: 'user_id,verse_id' }
+      );
+      if (error) throw error;
       await fetchUserQuranData();
       setEditingBookmarkVerse(null);
       showToast(t.quran.bookmarkAdded, 'success');
@@ -368,7 +349,6 @@ export function QuranView() {
     }
   };
 
-  // Search verses across Somali translations and Arabic text
   const handleVerseSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     const q = verseQuery.trim();
@@ -434,7 +414,6 @@ export function QuranView() {
 
   return (
     <div className="space-y-6">
-      {/* Header & Mode Switcher */}
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
         <div>
           <h1 className="font-display text-2xl sm:text-3xl font-semibold text-[#14241E] dark:text-[#F2EFE9]">
@@ -445,7 +424,6 @@ export function QuranView() {
           </p>
         </div>
 
-        {/* Segmented Mode Control */}
         <div className="flex items-center p-1 rounded-xl bg-[#EFECE4] dark:bg-[#0C1F19] border border-[#E5DFD3] dark:border-[#1B3A2F] self-start md:self-auto">
           <button
             type="button"
@@ -479,12 +457,11 @@ export function QuranView() {
             }`}
           >
             {t.quran.modeBookmarks}
-            {user && bookmarks.length > 0 ? ` (${bookmarks.length})` : ''}
+            {bookmarks.length > 0 ? ` (${bookmarks.length})` : ''}
           </button>
         </div>
       </div>
 
-      {/* Resume Reading Banner */}
       {readingProgress && progressSurah && (
         <div className="rounded-xl border border-[#D8CEB8] dark:border-[#244A3C] bg-[#F5F1E6] dark:bg-[#0C1F19] px-5 py-3.5 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3 text-sm">
@@ -505,10 +482,8 @@ export function QuranView() {
         </div>
       )}
 
-      {/* MODE 1: SURAHS & READER */}
       {mode === 'surahs' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Left Panel: Surah Directory (hidden on mobile when reader is open) */}
           <aside
             className={`lg:col-span-4 rounded-2xl border border-[#E5DFD3] dark:border-[#1B3A2F] bg-white dark:bg-[#0C1F19] overflow-hidden ${
               mobileReaderOpen ? 'hidden lg:block' : 'block'
@@ -610,13 +585,11 @@ export function QuranView() {
             )}
           </aside>
 
-          {/* Right Panel: Surah Reader */}
           <section
             className={`lg:col-span-8 rounded-2xl border border-[#E5DFD3] dark:border-[#1B3A2F] bg-white dark:bg-[#0C1F19] overflow-hidden ${
               mobileReaderOpen ? 'block' : 'hidden lg:block'
             }`}
           >
-            {/* Reader Sticky Controls */}
             <div className="p-4 sm:px-6 border-b border-[#EFECE4] dark:border-[#18352B] flex flex-wrap items-center justify-between gap-3 bg-[#FAF8F3]/70 dark:bg-[#091A14]">
               <div className="flex items-center gap-2">
                 <button
@@ -650,7 +623,6 @@ export function QuranView() {
                 )}
               </div>
 
-              {/* Font size & Surah Prev/Next */}
               <div className="flex items-center gap-2">
                 <div className="flex items-center p-0.5 rounded-lg bg-[#EFECE4] dark:bg-[#112921] border border-[#E5DFD3] dark:border-[#1B3A2F]">
                   {(['sm', 'md', 'lg', 'xl'] as ArabicScale[]).map((sz) => (
@@ -692,7 +664,6 @@ export function QuranView() {
               </div>
             </div>
 
-            {/* Bismillah Header on Page 1 (except Surah 1 where it's verse 1 and Surah 9 At-Tawbah) */}
             {page === 1 && selectedSurahId !== 1 && selectedSurahId !== 9 && (
               <div className="py-5 px-6 text-center border-b border-[#EFECE4] dark:border-[#18352B] bg-[#FAF8F3]/50 dark:bg-[#0A1C16]">
                 <p dir="rtl" lang="ar" className="font-arabic text-3xl text-[#064E3B] dark:text-[#D4AF6A]">
@@ -701,7 +672,6 @@ export function QuranView() {
               </div>
             )}
 
-            {/* Verses List */}
             {versesLoading ? (
               <div className="p-6 space-y-6">
                 {Array.from({ length: 5 }).map((_, i) => (
@@ -740,7 +710,6 @@ export function QuranView() {
                         isLastRead ? 'bg-[#F5F9F6] dark:bg-[#0F261E]' : ''
                       }`}
                     >
-                      {/* Verse Metadata & Actions */}
                       <div className="flex items-center justify-between gap-4 mb-4">
                         <div className="flex items-center gap-2 text-xs font-medium text-[#52635C] dark:text-[#8FA89E] tabular-nums">
                           <span className="font-semibold text-[#064E3B] dark:text-[#34D399]">
@@ -767,26 +736,24 @@ export function QuranView() {
                         </div>
 
                         <div className="flex items-center gap-1">
-                          {user && (
-                            <button
-                              type="button"
-                              onClick={() => saveReadingProgress(verse.surah_id, verse.verse_number, true)}
-                              title={t.quran.markLastRead}
-                              className={`min-h-[36px] px-2.5 rounded-lg text-xs font-medium inline-flex items-center gap-1 transition-colors ${
-                                isLastRead
-                                  ? 'text-[#064E3B] dark:text-[#34D399] bg-[#ECFDF5] dark:bg-[#143328]'
-                                  : 'text-[#52635C] dark:text-[#8FA89E] hover:bg-[#FAF8F3] dark:hover:bg-[#112921]'
-                              }`}
-                            >
-                              <Check className="w-3.5 h-3.5" />
-                              <span className="hidden sm:inline">{t.quran.markLastRead}</span>
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            onClick={() => saveReadingProgress(verse.surah_id, verse.verse_number, true)}
+                            title={t.quran.markLastRead}
+                            className={`min-h-[36px] px-2.5 rounded-lg text-xs font-medium inline-flex items-center gap-1 transition-colors ${
+                              isLastRead
+                                ? 'text-[#064E3B] dark:text-[#34D399] bg-[#ECFDF5] dark:bg-[#143328]'
+                                : 'text-[#52635C] dark:text-[#8FA89E] hover:bg-[#FAF8F3] dark:hover:bg-[#112921]'
+                            }`}
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">{t.quran.markLastRead}</span>
+                          </button>
 
                           <button
                             type="button"
                             onClick={() => openBookmarkEditor(verse)}
-                            aria-label={isBookmarked ? t.quran.saveBookmark : t.quran.saveBookmark}
+                            aria-label={t.quran.saveBookmark}
                             className={`min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg transition-colors ${
                               isBookmarked
                                 ? 'text-[#B48A3E] dark:text-[#D4AF6A] bg-[#FDF6E7] dark:bg-[#231D11]'
@@ -798,7 +765,6 @@ export function QuranView() {
                         </div>
                       </div>
 
-                      {/* Arabic Uthmani Text (RTL) */}
                       <p
                         dir="rtl"
                         lang="ar"
@@ -810,7 +776,6 @@ export function QuranView() {
                         </span>
                       </p>
 
-                      {/* Somali Translation */}
                       {translation && (
                         <div className="mt-4 space-y-2">
                           <p className="text-[15px] sm:text-base leading-relaxed text-[#2C3E37] dark:text-[#D6E2DC]">
@@ -856,7 +821,6 @@ export function QuranView() {
               </div>
             )}
 
-            {/* Pagination Footer */}
             {totalPages > 1 && (
               <div className="p-4 sm:px-6 border-t border-[#EFECE4] dark:border-[#18352B] flex items-center justify-between gap-4 bg-[#FAF8F3]/60 dark:bg-[#091A14]">
                 <button
@@ -894,7 +858,6 @@ export function QuranView() {
         </div>
       )}
 
-      {/* MODE 2: VERSE SEARCH */}
       {mode === 'search' && (
         <section className="rounded-2xl border border-[#E5DFD3] dark:border-[#1B3A2F] bg-white dark:bg-[#0C1F19] p-5 sm:p-6 space-y-6">
           <form onSubmit={handleVerseSearch} className="flex flex-col sm:flex-row gap-3">
@@ -917,9 +880,7 @@ export function QuranView() {
             </button>
           </form>
 
-          {searchError && (
-            <p className="text-sm text-[#991B1B] dark:text-[#FCA5A5]">{searchError}</p>
-          )}
+          {searchError && <p className="text-sm text-[#991B1B] dark:text-[#FCA5A5]">{searchError}</p>}
 
           {!hasSearched ? (
             <p className="text-sm text-[#52635C] dark:text-[#A3B8AF]">{t.quran.searchHint}</p>
@@ -939,7 +900,8 @@ export function QuranView() {
                   <div key={v.id} className="py-5 space-y-3">
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-xs font-semibold text-[#064E3B] dark:text-[#34D399] tabular-nums">
-                        {s ? (lang === 'so' ? s.name_so : s.name_en) : `Surah ${v.surah_id}`} · {v.surah_id}:{v.verse_number}
+                        {s ? (lang === 'so' ? s.name_so : s.name_en) : `Surah ${v.surah_id}`} · {v.surah_id}:
+                        {v.verse_number}
                       </span>
                       <button
                         type="button"
@@ -965,23 +927,9 @@ export function QuranView() {
         </section>
       )}
 
-      {/* MODE 3: BOOKMARKS */}
       {mode === 'bookmarks' && (
         <section className="rounded-2xl border border-[#E5DFD3] dark:border-[#1B3A2F] bg-white dark:bg-[#0C1F19] p-5 sm:p-6">
-          {!user ? (
-            <div className="py-8 text-center space-y-4 max-w-md mx-auto">
-              <Bookmark className="w-8 h-8 mx-auto text-[#B48A3E] dark:text-[#D4AF6A]" />
-              <h2 className="font-display text-lg font-semibold">{t.common.signInRequiredTitle}</h2>
-              <p className="text-sm text-[#52635C] dark:text-[#A3B8AF]">{t.common.signInRequiredDesc}</p>
-              <button
-                type="button"
-                onClick={() => setActiveTab('account')}
-                className="px-5 py-2.5 rounded-xl bg-[#064E3B] text-white dark:bg-[#10B981] dark:text-[#071410] text-sm font-medium"
-              >
-                {t.common.goToAccount}
-              </button>
-            </div>
-          ) : bookmarksLoading ? (
+          {bookmarksLoading ? (
             <div className="space-y-4">
               {Array.from({ length: 3 }).map((_, idx) => (
                 <div key={idx} className="h-24 rounded-xl bg-[#EFECE4] dark:bg-[#112921] animate-pulse" />
@@ -1006,7 +954,8 @@ export function QuranView() {
                         onClick={() => v && handleSelectSurah(v.surah_id, v.verse_number)}
                         className="text-sm font-semibold text-[#064E3B] dark:text-[#34D399] hover:underline tabular-nums"
                       >
-                        {s ? (lang === 'so' ? s.name_so : s.name_en) : ''} · {v ? `${v.surah_id}:${v.verse_number}` : bm.verse_id}
+                        {s ? (lang === 'so' ? s.name_so : s.name_en) : ''} ·{' '}
+                        {v ? `${v.surah_id}:${v.verse_number}` : bm.verse_id}
                       </button>
                       <button
                         type="button"
@@ -1019,7 +968,11 @@ export function QuranView() {
                     </div>
                     {v && (
                       <>
-                        <p dir="rtl" lang="ar" className="font-arabic text-2xl leading-[2] text-[#14241E] dark:text-[#F2EFE9]">
+                        <p
+                          dir="rtl"
+                          lang="ar"
+                          className="font-arabic text-2xl leading-[2] text-[#14241E] dark:text-[#F2EFE9]"
+                        >
                           {v.text_uthmani}
                         </p>
                         {v.quran_translations?.[0]?.translation_text && (
@@ -1030,9 +983,7 @@ export function QuranView() {
                       </>
                     )}
                     {bm.note && (
-                      <p className="text-xs italic text-[#7A6334] dark:text-[#D4AF6A]">
-                        {bm.note}
-                      </p>
+                      <p className="text-xs italic text-[#7A6334] dark:text-[#D4AF6A]">{bm.note}</p>
                     )}
                   </div>
                 );
@@ -1042,7 +993,6 @@ export function QuranView() {
         </section>
       )}
 
-      {/* Bookmark Note Modal */}
       {editingBookmarkVerse && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
           <form

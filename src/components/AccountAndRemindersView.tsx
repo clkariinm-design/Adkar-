@@ -4,11 +4,10 @@ import {
   Bookmark,
   Globe,
   Heart,
-  LogOut,
   Plus,
+  SlidersHorizontal,
   Target,
   Trash2,
-  User as UserIcon,
 } from 'lucide-react';
 import { useApp } from '../contexts/AppContext';
 import { supabase, type DailyGoal, type Reminder } from '../lib/supabase';
@@ -32,37 +31,25 @@ const COMMON_TIMEZONES = [
 ];
 
 export function AccountAndRemindersView() {
-  const { user, profile, refreshProfile, lang, setLang, theme, toggleTheme, t, signOut, showToast } = useApp();
+  const { user, profile, refreshProfile, lang, setLang, theme, toggleTheme, t, showToast } = useApp();
 
-  // Auth form state
-  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [authDisplayName, setAuthDisplayName] = useState('');
-  const [authBusy, setAuthBusy] = useState(false);
-  const [authMessage, setAuthMessage] = useState<{ text: string; tone: 'error' | 'info' } | null>(null);
-
-  // Account sub-tabs
   const [subTab, setSubTab] = useState<'profile' | 'reminders'>('profile');
 
-  // Profile form state
   const [displayName, setDisplayName] = useState('');
   const [timezone, setTimezone] = useState(
     Intl.DateTimeFormat().resolvedOptions().timeZone || 'Africa/Mogadishu'
   );
   const [savingProfile, setSavingProfile] = useState(false);
 
-  // Daily goal state
   const [dailyGoal, setDailyGoal] = useState<DailyGoal | null>(null);
   const [goalTarget, setGoalTarget] = useState('100');
   const [savingGoal, setSavingGoal] = useState(false);
 
-  // Personal counts summary
   const [stats, setStats] = useState({ bookmarks: 0, favorites: 0, tasbihSessions: 0 });
 
-  // Reminders state
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [remindersLoading, setRemindersLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [newRemType, setNewRemType] = useState<'morning' | 'evening' | 'quran' | 'custom'>('morning');
   const [newRemTime, setNewRemTime] = useState('06:00');
   const [newRemDays, setNewRemDays] = useState<number[]>([0, 1, 2, 3, 4, 5, 6]);
@@ -83,6 +70,7 @@ export function AccountAndRemindersView() {
   const loadAccountData = useCallback(async () => {
     if (!user) return;
     setRemindersLoading(true);
+    setLoadError(null);
     try {
       const [goalRes, bmRes, favRes, sesRes, remRes] = await Promise.all([
         supabase
@@ -101,7 +89,13 @@ export function AccountAndRemindersView() {
           .order('reminder_time', { ascending: true }),
       ]);
 
-      if (!goalRes.error && goalRes.data) {
+      if (goalRes.error) throw goalRes.error;
+      if (bmRes.error) throw bmRes.error;
+      if (favRes.error) throw favRes.error;
+      if (sesRes.error) throw sesRes.error;
+      if (remRes.error) throw remRes.error;
+
+      if (goalRes.data) {
         setDailyGoal(goalRes.data);
         setGoalTarget(String(goalRes.data.target_count));
       } else {
@@ -114,9 +108,9 @@ export function AccountAndRemindersView() {
         tasbihSessions: sesRes.count ?? 0,
       });
 
-      if (!remRes.error && remRes.data) {
-        setReminders(remRes.data);
-      }
+      setReminders(remRes.data ?? []);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'Failed to load settings');
     } finally {
       setRemindersLoading(false);
     }
@@ -126,69 +120,25 @@ export function AccountAndRemindersView() {
     loadAccountData();
   }, [loadAccountData]);
 
-  const handleAuthSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthBusy(true);
-    setAuthMessage(null);
-
-    try {
-      if (authMode === 'signin') {
-        const { error } = await supabase.auth.signInWithPassword({
-          email: email.trim(),
-          password,
-        });
-        if (error) throw error;
-        showToast(`${t.home.salam}!`, 'success');
-      } else {
-        const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-        const { data, error } = await supabase.auth.signUp({
-          email: email.trim(),
-          password,
-          options: {
-            data: {
-              display_name: authDisplayName.trim() || email.trim().split('@')[0],
-              locale: lang,
-              timezone: browserTz,
-            },
-          },
-        });
-        if (error) throw error;
-        if (!data.session) {
-          setAuthMessage({ text: t.account.checkEmailNotice, tone: 'info' });
-        } else {
-          showToast(`${t.home.salam}!`, 'success');
-        }
-      }
-    } catch (err) {
-      setAuthMessage({
-        text: err instanceof Error ? err.message : 'Authentication failed',
-        tone: 'error',
-      });
-    } finally {
-      setAuthBusy(false);
-    }
-  };
-
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
     setSavingProfile(true);
     try {
-      const { error } = await supabase.from('profiles').upsert(
-        {
-          id: user.id,
+      const { error } = await supabase
+        .from('profiles')
+        .update({
           display_name: displayName.trim() || null,
           locale: lang,
           timezone,
           updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'id' }
-      );
+        })
+        .eq('id', user.id);
       if (error) throw error;
       await refreshProfile();
       showToast(t.account.profileSaved, 'success');
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Error updating profile', 'error');
+      showToast(err instanceof Error ? err.message : 'Error updating preferences', 'error');
     } finally {
       setSavingProfile(false);
     }
@@ -200,25 +150,21 @@ export function AccountAndRemindersView() {
     const parsed = Math.max(1, Math.min(10000, parseInt(goalTarget, 10) || 100));
     setSavingGoal(true);
     try {
-      if (dailyGoal) {
-        const { data, error } = await supabase
-          .from('daily_goals')
-          .update({ target_count: parsed, updated_at: new Date().toISOString() })
-          .eq('id', dailyGoal.id)
-          .eq('user_id', user.id)
-          .select('*')
-          .single();
-        if (error) throw error;
-        setDailyGoal(data);
-      } else {
-        const { data, error } = await supabase
-          .from('daily_goals')
-          .insert({ user_id: user.id, goal_date: todayStr, target_count: parsed })
-          .select('*')
-          .single();
-        if (error) throw error;
-        setDailyGoal(data);
-      }
+      const { data, error } = await supabase
+        .from('daily_goals')
+        .upsert(
+          {
+            user_id: user.id,
+            goal_date: todayStr,
+            target_count: parsed,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'user_id,goal_date' }
+        )
+        .select('*')
+        .single();
+      if (error) throw error;
+      setDailyGoal(data);
       showToast(t.account.dailyGoalSaved, 'success');
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Error saving daily goal', 'error');
@@ -292,99 +238,6 @@ export function AccountAndRemindersView() {
     new Set([timezone, Intl.DateTimeFormat().resolvedOptions().timeZone, ...COMMON_TIMEZONES].filter(Boolean))
   );
 
-  // SIGNED OUT VIEW
-  if (!user) {
-    return (
-      <div className="max-w-md mx-auto py-4 sm:py-8">
-        <div className="rounded-2xl border border-[#E5DFD3] dark:border-[#1B3A2F] bg-white dark:bg-[#0C1F19] p-6 sm:p-8 space-y-6">
-          <div className="space-y-1.5">
-            <h1 className="font-display text-2xl font-semibold text-[#14241E] dark:text-[#F2EFE9]">
-              {authMode === 'signin' ? t.common.signIn : t.common.signUp}
-            </h1>
-            <p className="text-sm text-[#52635C] dark:text-[#A3B8AF]">{t.common.signInRequiredDesc}</p>
-          </div>
-
-          {authMessage && (
-            <div
-              className={`p-3.5 rounded-xl text-xs leading-relaxed border ${
-                authMessage.tone === 'error'
-                  ? 'bg-[#FEF2F2] dark:bg-[#2A1215] border-[#FECACA] dark:border-[#7F1D1D] text-[#991B1B] dark:text-[#FCA5A5]'
-                  : 'bg-[#ECFDF5] dark:bg-[#0B2E22] border-[#A7F3D0] dark:border-[#065F46] text-[#065F46] dark:text-[#6EE7B7]'
-              }`}
-            >
-              {authMessage.text}
-            </div>
-          )}
-
-          <form onSubmit={handleAuthSubmit} className="space-y-4">
-            {authMode === 'signup' && (
-              <div className="space-y-1.5">
-                <label className="block text-xs font-medium text-[#52635C] dark:text-[#A3B8AF]">
-                  {t.account.displayNameLabel}
-                </label>
-                <input
-                  type="text"
-                  value={authDisplayName}
-                  onChange={(e) => setAuthDisplayName(e.target.value)}
-                  placeholder={t.account.displayNamePlaceholder}
-                  className="w-full px-3.5 py-2.5 text-sm rounded-xl border border-[#E5DFD3] dark:border-[#1B3A2F] bg-[#FAF8F3] dark:bg-[#071410]"
-                />
-              </div>
-            )}
-
-            <div className="space-y-1.5">
-              <label className="block text-xs font-medium text-[#52635C] dark:text-[#A3B8AF]">
-                {t.account.emailLabel}
-              </label>
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full px-3.5 py-2.5 text-sm rounded-xl border border-[#E5DFD3] dark:border-[#1B3A2F] bg-[#FAF8F3] dark:bg-[#071410]"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="block text-xs font-medium text-[#52635C] dark:text-[#A3B8AF]">
-                {t.account.passwordLabel}
-              </label>
-              <input
-                type="password"
-                required
-                minLength={6}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-3.5 py-2.5 text-sm rounded-xl border border-[#E5DFD3] dark:border-[#1B3A2F] bg-[#FAF8F3] dark:bg-[#071410]"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={authBusy}
-              className="w-full py-3 rounded-xl bg-[#064E3B] text-white dark:bg-[#10B981] dark:text-[#071410] text-sm font-semibold hover:opacity-95 disabled:opacity-60"
-            >
-              {authBusy ? t.common.loading : authMode === 'signin' ? t.common.signIn : t.common.signUp}
-            </button>
-          </form>
-
-          <div className="pt-2 border-t border-[#EFECE4] dark:border-[#18352B] flex items-center justify-between gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setAuthMode((m) => (m === 'signin' ? 'signup' : 'signin'));
-                setAuthMessage(null);
-              }}
-              className="text-xs font-medium text-[#064E3B] dark:text-[#34D399] hover:underline"
-            >
-              {authMode === 'signin' ? t.account.needAccount : t.account.haveAccount}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   const reminderTypeLabel = (type: string) => {
     if (type === 'morning') return t.account.types.morning;
     if (type === 'evening') return t.account.types.evening;
@@ -399,47 +252,49 @@ export function AccountAndRemindersView() {
           <h1 className="font-display text-2xl sm:text-3xl font-semibold text-[#14241E] dark:text-[#F2EFE9]">
             {t.account.title}
           </h1>
-          <p className="mt-1 text-sm text-[#52635C] dark:text-[#A3B8AF]">{user.email}</p>
+          <p className="mt-1 text-sm text-[#52635C] dark:text-[#A3B8AF]">{t.account.subtitle}</p>
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="flex items-center p-1 rounded-xl bg-[#EFECE4] dark:bg-[#0C1F19] border border-[#E5DFD3] dark:border-[#1B3A2F]">
-            <button
-              type="button"
-              onClick={() => setSubTab('profile')}
-              className={`px-3.5 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
-                subTab === 'profile'
-                  ? 'bg-white dark:bg-[#143328] text-[#064E3B] dark:text-[#F2EFE9] shadow-xs'
-                  : 'text-[#52635C] dark:text-[#8FA89E]'
-              }`}
-            >
-              {t.account.tabProfile}
-            </button>
-            <button
-              type="button"
-              onClick={() => setSubTab('reminders')}
-              className={`px-3.5 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
-                subTab === 'reminders'
-                  ? 'bg-white dark:bg-[#143328] text-[#064E3B] dark:text-[#F2EFE9] shadow-xs'
-                  : 'text-[#52635C] dark:text-[#8FA89E]'
-              }`}
-            >
-              {t.account.tabReminders}
-            </button>
-          </div>
-
+        <div className="flex items-center p-1 rounded-xl bg-[#EFECE4] dark:bg-[#0C1F19] border border-[#E5DFD3] dark:border-[#1B3A2F] self-start sm:self-auto">
           <button
             type="button"
-            onClick={signOut}
-            className="px-3.5 py-2 rounded-xl border border-[#E5DFD3] dark:border-[#1B3A2F] text-xs font-medium text-[#991B1B] dark:text-[#FCA5A5] hover:bg-[#FEF2F2] dark:hover:bg-[#2A1215] inline-flex items-center gap-1.5 whitespace-nowrap"
+            onClick={() => setSubTab('profile')}
+            className={`px-3.5 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
+              subTab === 'profile'
+                ? 'bg-white dark:bg-[#143328] text-[#064E3B] dark:text-[#F2EFE9] shadow-xs'
+                : 'text-[#52635C] dark:text-[#8FA89E]'
+            }`}
           >
-            <LogOut className="w-3.5 h-3.5" />
-            <span>{t.common.signOut}</span>
+            {t.account.tabProfile}
+          </button>
+          <button
+            type="button"
+            onClick={() => setSubTab('reminders')}
+            className={`px-3.5 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
+              subTab === 'reminders'
+                ? 'bg-white dark:bg-[#143328] text-[#064E3B] dark:text-[#F2EFE9] shadow-xs'
+                : 'text-[#52635C] dark:text-[#8FA89E]'
+            }`}
+          >
+            {t.account.tabReminders}
           </button>
         </div>
       </div>
 
-      {/* Stats Row */}
+      {loadError && (
+        <div className="p-4 rounded-xl border border-[#FECACA] dark:border-[#7F1D1D] bg-[#FEF2F2] dark:bg-[#2A1215] flex items-center justify-between gap-4">
+          <p className="text-sm text-[#991B1B] dark:text-[#FCA5A5]">{loadError}</p>
+          <button
+            type="button"
+            onClick={loadAccountData}
+            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-[#991B1B] text-white whitespace-nowrap"
+          >
+            {t.common.retry}
+          </button>
+        </div>
+      )}
+
+      {/* Personal Activity Stats */}
       <div className="grid grid-cols-3 gap-4">
         <div className="rounded-2xl border border-[#E5DFD3] dark:border-[#1B3A2F] bg-white dark:bg-[#0C1F19] p-4 sm:p-5">
           <div className="flex items-center justify-between text-xs text-[#52635C] dark:text-[#8FA89E]">
@@ -472,13 +327,12 @@ export function AccountAndRemindersView() {
 
       {subTab === 'profile' ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-          {/* Profile Settings */}
           <form
             onSubmit={handleSaveProfile}
             className="rounded-2xl border border-[#E5DFD3] dark:border-[#1B3A2F] bg-white dark:bg-[#0C1F19] p-6 space-y-5"
           >
             <div className="flex items-center gap-2.5">
-              <UserIcon className="w-5 h-5 text-[#064E3B] dark:text-[#34D399]" />
+              <SlidersHorizontal className="w-5 h-5 text-[#064E3B] dark:text-[#34D399]" />
               <h2 className="font-display text-lg font-semibold text-[#14241E] dark:text-[#F2EFE9]">
                 {t.account.profileSectionTitle}
               </h2>
@@ -550,9 +404,7 @@ export function AccountAndRemindersView() {
                 </label>
                 <button
                   type="button"
-                  onClick={() =>
-                    setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
-                  }
+                  onClick={() => setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')}
                   className="text-xs font-medium text-[#064E3B] dark:text-[#34D399] hover:underline"
                 >
                   {t.account.useDeviceTimezone}
@@ -580,7 +432,6 @@ export function AccountAndRemindersView() {
             </button>
           </form>
 
-          {/* Daily Goal Settings */}
           <form
             onSubmit={handleSaveGoal}
             className="rounded-2xl border border-[#E5DFD3] dark:border-[#1B3A2F] bg-white dark:bg-[#0C1F19] p-6 space-y-5"
@@ -619,7 +470,6 @@ export function AccountAndRemindersView() {
           </form>
         </div>
       ) : (
-        /* REMINDERS TAB */
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           <form
             onSubmit={handleAddReminder}

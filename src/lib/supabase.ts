@@ -139,13 +139,14 @@ export interface QuranReadingProgress {
   last_surah_id: number;
   last_verse_number: number;
   last_read_at: string;
+  completed_khatm_count?: number;
 }
 
 export interface TasbihCounter {
   id: string;
   user_id: string;
   title: string;
-  count: number;
+  dhikr_text_ar: string | null;
   target_count: number;
   total_count: number;
   is_default: boolean;
@@ -157,6 +158,7 @@ export interface TasbihSession {
   id: string;
   user_id: string;
   counter_id: string;
+  dhikr_label: string;
   count: number;
   session_date: string;
   created_at: string;

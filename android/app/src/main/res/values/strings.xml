@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">NUUR</string>
+    <string name="title_activity_main">NUUR</string>
+    <string name="package_name">com.nuur.islamicapp</string>
+    <string name="custom_url_scheme">com.nuur.islamicapp</string>
+</resources>

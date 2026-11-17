@@ -5,8 +5,8 @@ import {
   HeartHandshake,
   Home,
   Moon,
+  SlidersHorizontal,
   Sun,
-  User,
   X,
   CheckCircle2,
   AlertCircle,
@@ -16,7 +16,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import { useApp, type NavTab } from '../contexts/AppContext';
 
 export function Layout({ children }: { children: React.ReactNode }) {
-  const { activeTab, setActiveTab, user, profile, t, theme, toggleTheme, lang, setLang, toast, clearToast } =
+  const { activeTab, setActiveTab, profile, t, theme, toggleTheme, lang, setLang, toast, clearToast } =
     useApp();
 
   const navItems: { id: NavTab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
@@ -24,12 +24,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
     { id: 'quran', label: t.nav.quran, icon: BookOpen },
     { id: 'adhkar', label: t.nav.adhkar, icon: HeartHandshake },
     { id: 'tasbih', label: t.nav.tasbih, icon: Compass },
-    { id: 'account', label: t.nav.account, icon: User },
+    { id: 'account', label: t.nav.account, icon: SlidersHorizontal },
   ];
 
-  const accountButtonLabel = user
-    ? profile?.display_name || user.email?.split('@')[0] || t.nav.account
-    : t.common.signIn;
+  const primaryActionLabel = profile?.display_name || t.nav.account;
 
   return (
     <div className="min-h-screen flex flex-col bg-[#FAF8F3] text-[#14241E] dark:bg-[#071410] dark:text-[#F2EFE9] transition-colors duration-200">
@@ -76,7 +74,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
               onClick={() => setActiveTab('account')}
               className="px-4 py-2 text-sm font-medium rounded-lg bg-[#064E3B] text-[#FAF8F3] hover:bg-[#053F30] dark:bg-[#10B981] dark:text-[#071410] dark:hover:bg-[#34D399] transition-colors whitespace-nowrap shrink-0 max-w-[160px] truncate focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#B48A3E]"
             >
-              {accountButtonLabel}
+              {primaryActionLabel}
             </button>
           </div>
         </div>
