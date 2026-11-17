@@ -11,13 +11,30 @@ import {
   CheckCircle2,
   AlertCircle,
   Info,
+  WifiOff,
+  RefreshCw,
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useApp, type NavTab } from '../contexts/AppContext';
 
 export function Layout({ children }: { children: React.ReactNode }) {
-  const { activeTab, setActiveTab, profile, t, theme, toggleTheme, lang, setLang, toast, clearToast } =
-    useApp();
+  const {
+    activeTab,
+    setActiveTab,
+    profile,
+    t,
+    theme,
+    toggleTheme,
+    lang,
+    setLang,
+    toast,
+    clearToast,
+    isOnline,
+    pendingSyncCount,
+    isSyncing,
+    syncError,
+    syncNow,
+  } = useApp();
 
   const navItems: { id: NavTab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
     { id: 'home', label: t.nav.home, icon: Home },
@@ -155,6 +172,46 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
       {/* Main Content Viewport */}
       <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 pb-24 md:pb-12">
+        {(!isOnline || pendingSyncCount > 0 || syncError) && (
+          <div className="mb-5 flex flex-wrap items-center gap-2 text-xs">
+            {!isOnline && (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#E6CFA0] dark:border-[#5C4820] bg-[#FDF6E7] dark:bg-[#231D11] text-[#7A6334] dark:text-[#E6CFA0] font-medium">
+                <WifiOff className="w-3.5 h-3.5" />
+                <span>{t.offline.offlineBadge}</span>
+              </span>
+            )}
+
+            {pendingSyncCount > 0 && (
+              <button
+                type="button"
+                disabled={!isOnline || isSyncing}
+                onClick={() => void syncNow()}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#E5DFD3] dark:border-[#1B3A2F] bg-white dark:bg-[#0C1F19] text-[#14241E] dark:text-[#F2EFE9] font-medium disabled:opacity-60"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                <span className="tabular-nums">
+                  {isSyncing
+                    ? t.offline.syncing
+                    : `${pendingSyncCount} ${t.offline.pendingSync}`}
+                </span>
+                {isOnline && !isSyncing && (
+                  <span className="text-[#064E3B] dark:text-[#34D399] font-semibold">
+                    · {t.offline.syncNow}
+                  </span>
+                )}
+              </button>
+            )}
+
+            {syncError && (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#FECACA] dark:border-[#7F1D1D] bg-[#FEF2F2] dark:bg-[#2A1215] text-[#991B1B] dark:text-[#FCA5A5]">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                <span>
+                  {t.offline.syncError}: {syncError}
+                </span>
+              </span>
+            )}
+          </div>
+        )}
         {children}
       </main>
 

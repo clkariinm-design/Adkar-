@@ -3,6 +3,7 @@ import { Check, Plus, RotateCcw, Save, Trash2 } from 'lucide-react';
 import { useApp } from '../contexts/AppContext';
 import { supabase, type TasbihCounter, type TasbihSession } from '../lib/supabase';
 import { getTodayDateString } from '../lib/i18n';
+import { enqueueSyncOp, getCachedValue, setCachedValue } from '../lib/offlineStore';
 
 const DEFAULT_PRESETS = [
   { title: 'SubhanAllah', dhikr_text_ar: 'سُبْحَانَ اللَّهِ', target_count: 33, is_default: true },
@@ -12,7 +13,7 @@ const DEFAULT_PRESETS = [
 ];
 
 export function TasbihView() {
-  const { user, profile, t, showToast } = useApp();
+  const { user, profile, t, showToast, isOnline } = useApp();
 
   const [counters, setCounters] = useState<TasbihCounter[]>([]);
   const [sessions, setSessions] = useState<TasbihSession[]>([]);
@@ -76,19 +77,44 @@ export function TasbihView() {
     async (counterId: string, nextTotal: number) => {
       if (!user) return;
       delete pendingTotalsRef.current[counterId];
-      const { error: updErr } = await supabase
-        .from('tasbih_counters')
-        .update({
-          total_count: nextTotal,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', counterId)
-        .eq('user_id', user.id);
-      if (updErr && isMountedRef.current) {
-        showToast(updErr.message, 'error');
+      const nowIso = new Date().toISOString();
+      const queueOffline = async () => {
+        await enqueueSyncOp(
+          user.id,
+          'tasbih_total',
+          `tasbih_total:${user.id}:${counterId}`,
+          {
+            counter_id: counterId,
+            total_count: nextTotal,
+            updated_at: nowIso,
+          }
+        );
+      };
+
+      if (!isOnline) {
+        await queueOffline();
+        return;
+      }
+
+      try {
+        const { error: updErr } = await supabase
+          .from('tasbih_counters')
+          .update({
+            total_count: nextTotal,
+            updated_at: nowIso,
+          })
+          .eq('id', counterId)
+          .eq('user_id', user.id);
+        if (updErr) throw updErr;
+      } catch (err) {
+        if (!isOnline || (err instanceof TypeError && err.message.toLowerCase().includes('fetch'))) {
+          await queueOffline();
+        } else if (isMountedRef.current) {
+          showToast(err instanceof Error ? err.message : 'Sync failed', 'error');
+        }
       }
     },
-    [user, showToast]
+    [user, isOnline, showToast]
   );
 
   useEffect(() => {
@@ -107,6 +133,8 @@ export function TasbihView() {
     if (!user) return;
     setLoading(true);
     setError(null);
+    const cntCacheKey = `tasbih:counters:${user.id}`;
+    const sesCacheKey = `tasbih:sessions:${user.id}`;
     try {
       const [cntRes, sesRes] = await Promise.all([
         supabase
@@ -128,6 +156,7 @@ export function TasbihView() {
 
       if (!isMountedRef.current) return;
       const loadedCounters = cntRes.data ?? [];
+      const loadedSessions = sesRes.data ?? [];
       const totalsMap: Record<string, number> = {};
       loadedCounters.forEach((c) => {
         totalsMap[c.id] = c.total_count;
@@ -140,9 +169,31 @@ export function TasbihView() {
           loadedCounters.some((c) => c.id === prev) ? prev : loadedCounters[0].id
         );
       }
-      setSessions(sesRes.data ?? []);
+      setSessions(loadedSessions);
+      await Promise.all([
+        setCachedValue(cntCacheKey, loadedCounters),
+        setCachedValue(sesCacheKey, loadedSessions),
+      ]);
     } catch (err) {
-      if (isMountedRef.current) {
+      const [cachedCnt, cachedSes] = await Promise.all([
+        getCachedValue<TasbihCounter[]>(cntCacheKey),
+        getCachedValue<TasbihSession[]>(sesCacheKey),
+      ]);
+      if (!isMountedRef.current) return;
+      if (cachedCnt) {
+        const totalsMap: Record<string, number> = {};
+        cachedCnt.forEach((c) => {
+          totalsMap[c.id] = c.total_count;
+        });
+        totalCountsRef.current = totalsMap;
+        setCounters(cachedCnt);
+        if (cachedCnt.length > 0) {
+          setActiveCounterId((prev) =>
+            cachedCnt.some((c) => c.id === prev) ? prev : cachedCnt[0].id
+          );
+        }
+        setSessions(cachedSes ?? []);
+      } else {
         setError(err instanceof Error ? err.message : 'Failed to load Tasbih data');
       }
     } finally {
@@ -193,9 +244,13 @@ export function TasbihView() {
       persistRoundLocally(next);
       return next;
     });
-    setCounters((prev) =>
-      prev.map((c) => (c.id === activeCounter.id ? { ...c, total_count: nextTotal } : c))
-    );
+    setCounters((prev) => {
+      const updated = prev.map((c) =>
+        c.id === activeCounter.id ? { ...c, total_count: nextTotal } : c
+      );
+      void setCachedValue(`tasbih:counters:${user.id}`, updated);
+      return updated;
+    });
     queueTotalUpdate(activeCounter.id, nextTotal);
   };
 
@@ -220,12 +275,66 @@ export function TasbihView() {
     }
     delete pendingTotalsRef.current[activeCounter.id];
 
+    const clientSessionId =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const nowIso = new Date().toISOString();
+
+    const queueSessionOffline = async () => {
+      const offlineSession: TasbihSession = {
+        id: clientSessionId,
+        user_id: user.id,
+        counter_id: activeCounter.id,
+        dhikr_label: activeCounter.title,
+        count: sessionCount,
+        session_date: todayStr,
+        created_at: nowIso,
+      };
+      await Promise.all([
+        enqueueSyncOp(
+          user.id,
+          'tasbih_total',
+          `tasbih_total:${user.id}:${activeCounter.id}`,
+          {
+            counter_id: activeCounter.id,
+            total_count: latestTotal,
+            updated_at: nowIso,
+          }
+        ),
+        enqueueSyncOp(user.id, 'tasbih_session', `tasbih_session:${clientSessionId}`, {
+          id: clientSessionId,
+          counter_id: activeCounter.id,
+          dhikr_label: activeCounter.title,
+          count: sessionCount,
+          session_date: todayStr,
+        }),
+      ]);
+
+      setRoundCounts((prev) => {
+        const next = { ...prev, [activeCounter.id]: 0 };
+        persistRoundLocally(next);
+        return next;
+      });
+      setSessions((prev) => {
+        const updated = [offlineSession, ...prev].slice(0, 20);
+        void setCachedValue(`tasbih:sessions:${user.id}`, updated);
+        return updated;
+      });
+      showToast(t.tasbih.sessionSaved, 'info');
+    };
+
     try {
-      // Flush latest total_count immediately and log session
+      if (!isOnline) {
+        await queueSessionOffline();
+        return;
+      }
+
       const [sesRes, cntRes] = await Promise.all([
         supabase
           .from('tasbih_sessions')
           .insert({
+            id: clientSessionId,
             user_id: user.id,
             counter_id: activeCounter.id,
             dhikr_label: activeCounter.title,
@@ -238,7 +347,7 @@ export function TasbihView() {
           .from('tasbih_counters')
           .update({
             total_count: latestTotal,
-            updated_at: new Date().toISOString(),
+            updated_at: nowIso,
           })
           .eq('id', activeCounter.id)
           .eq('user_id', user.id),
@@ -253,11 +362,19 @@ export function TasbihView() {
         return next;
       });
       if (sesRes.data) {
-        setSessions((prev) => [sesRes.data, ...prev].slice(0, 20));
+        setSessions((prev) => {
+          const updated = [sesRes.data, ...prev].slice(0, 20);
+          void setCachedValue(`tasbih:sessions:${user.id}`, updated);
+          return updated;
+        });
       }
       showToast(t.tasbih.sessionSaved, 'success');
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Error saving session', 'error');
+      if (!isOnline || (err instanceof TypeError && err.message.toLowerCase().includes('fetch'))) {
+        await queueSessionOffline();
+      } else {
+        showToast(err instanceof Error ? err.message : 'Error saving session', 'error');
+      }
     } finally {
       setSavingSession(false);
     }

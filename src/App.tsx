@@ -7,9 +7,11 @@ import { QuranView } from './components/QuranView';
 import { AdhkarView } from './components/AdhkarView';
 import { TasbihView } from './components/TasbihView';
 import { AccountAndRemindersView } from './components/AccountAndRemindersView';
+import { MaintenanceScreen } from './components/MaintenanceScreen';
+import { UpdatePromptModal } from './components/UpdatePromptModal';
 
 function MainViews() {
-  const { activeTab, session, authLoading, t } = useApp();
+  const { activeTab, session, authLoading, maintenanceMode, t } = useApp();
 
   if (authLoading) {
     return (
@@ -20,18 +22,25 @@ function MainViews() {
     );
   }
 
+  if (maintenanceMode) {
+    return <MaintenanceScreen />;
+  }
+
   if (!session) {
     return <WelcomeScreen />;
   }
 
   return (
-    <Layout>
-      {activeTab === 'home' && <HomeDashboard />}
-      {activeTab === 'quran' && <QuranView />}
-      {activeTab === 'adhkar' && <AdhkarView />}
-      {activeTab === 'tasbih' && <TasbihView />}
-      {activeTab === 'account' && <AccountAndRemindersView />}
-    </Layout>
+    <>
+      <Layout>
+        {activeTab === 'home' && <HomeDashboard />}
+        {activeTab === 'quran' && <QuranView />}
+        {activeTab === 'adhkar' && <AdhkarView />}
+        {activeTab === 'tasbih' && <TasbihView />}
+        {activeTab === 'account' && <AccountAndRemindersView />}
+      </Layout>
+      <UpdatePromptModal />
+    </>
   );
 }
 

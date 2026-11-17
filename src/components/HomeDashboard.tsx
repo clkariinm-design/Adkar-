@@ -10,18 +10,35 @@ import {
   Target,
   Check,
   Edit3,
+  Megaphone,
+  Download,
+  AlertTriangle,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useApp } from '../contexts/AppContext';
 import {
+  pickLocalizedText,
   supabase,
   type DailyGoal,
+  type KhatmahDailyScheduleRow,
+  type KhatmahPlan,
+  type KhatmahReadingLog,
   type QuranReadingProgress,
   type QuranSurah,
   type QuranVerse,
   type Reminder,
 } from '../lib/supabase';
 import { getCurrentTimePartsInTimezone, getTodayDateString, WEEKDAY_LABELS } from '../lib/i18n';
+import { enqueueSyncOp, getCachedValue, getQueuedOps, setCachedValue } from '../lib/offlineStore';
+import {
+  buildOfflineKhatmahSchedule,
+  calculateTargetEndDate,
+  computeKhatmahProgress,
+  formatShortDate,
+  getMogadishuDateString,
+  makeRangeKey,
+  type KhatmahProgressStats,
+} from '../lib/khatmah';
 
 interface DashboardData {
   surahsCount: number;
@@ -32,10 +49,29 @@ interface DashboardData {
   adhkarTodayCount: number;
   tasbihTodayCount: number;
   reminders: Reminder[];
+  activeKhatmahPlan: KhatmahPlan | null;
+  khatmahProgress: KhatmahProgressStats | null;
 }
 
 export function HomeDashboard() {
-  const { user, profile, lang, setLang, theme, toggleTheme, t, setActiveTab, openQuranAt, showToast } = useApp();
+  const {
+    user,
+    profile,
+    lang,
+    setLang,
+    theme,
+    toggleTheme,
+    t,
+    setActiveTab,
+    openQuranAt,
+    openKhatmah,
+    showToast,
+    isOnline,
+    activeAnnouncements,
+    latestAndroidVersion,
+    updateStatus,
+    setUpdateModalOpen,
+  } = useApp();
 
   const [data, setData] = useState<DashboardData>({
     surahsCount: 114,
@@ -46,6 +82,8 @@ export function HomeDashboard() {
     adhkarTodayCount: 0,
     tasbihTodayCount: 0,
     reminders: [],
+    activeKhatmahPlan: null,
+    khatmahProgress: null,
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -62,37 +100,48 @@ export function HomeDashboard() {
     if (!user) return;
     setLoading(true);
     setError(null);
+    const cacheKey = `dashboard:${user.id}:${todayStr}`;
     try {
-      const [surahCountRes, progRes, goalRes, adhkarRes, tasbihRes, remRes] = await Promise.all([
-        supabase.from('quran_surahs').select('id', { count: 'exact', head: true }),
-        supabase
-          .from('quran_reading_progress')
-          .select('user_id, last_surah_id, last_verse_number, last_read_at')
-          .eq('user_id', user.id)
-          .maybeSingle(),
-        supabase
-          .from('daily_goals')
-          .select('id, user_id, goal_date, target_count, created_at, updated_at')
-          .eq('user_id', user.id)
-          .eq('goal_date', todayStr)
-          .maybeSingle(),
-        supabase
-          .from('user_progress')
-          .select('count')
-          .eq('user_id', user.id)
-          .eq('progress_date', todayStr),
-        supabase
-          .from('tasbih_sessions')
-          .select('count')
-          .eq('user_id', user.id)
-          .eq('session_date', todayStr),
-        supabase
-          .from('reminders')
-          .select('id, user_id, reminder_type, reminder_time, timezone, weekdays, is_enabled, created_at, updated_at')
-          .eq('user_id', user.id)
-          .eq('is_enabled', true)
-          .order('reminder_time', { ascending: true }),
-      ]);
+      const [surahCountRes, progRes, goalRes, adhkarRes, tasbihRes, remRes, khatmahPlansRes, khatmahLogsRes] =
+        await Promise.all([
+          supabase.from('quran_surahs').select('id', { count: 'exact', head: true }),
+          supabase
+            .from('quran_reading_progress')
+            .select('user_id, last_surah_id, last_verse_number, last_read_at')
+            .eq('user_id', user.id)
+            .maybeSingle(),
+          supabase
+            .from('daily_goals')
+            .select('id, user_id, goal_date, target_count, created_at, updated_at')
+            .eq('user_id', user.id)
+            .eq('goal_date', todayStr)
+            .maybeSingle(),
+          supabase
+            .from('user_progress')
+            .select('count')
+            .eq('user_id', user.id)
+            .eq('progress_date', todayStr),
+          supabase
+            .from('tasbih_sessions')
+            .select('count')
+            .eq('user_id', user.id)
+            .eq('session_date', todayStr),
+          supabase
+            .from('reminders')
+            .select('id, user_id, reminder_type, reminder_time, timezone, weekdays, is_enabled, created_at, updated_at')
+            .eq('user_id', user.id)
+            .eq('is_enabled', true)
+            .order('reminder_time', { ascending: true }),
+          supabase
+            .from('quran_khatmah_plans')
+            .select('id, user_id, name, duration_days, start_date, status, completed_at, created_at, updated_at')
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: false }),
+          supabase
+            .from('quran_khatmah_reading_logs')
+            .select('id, plan_id, user_id, reading_date, start_verse_id, end_verse_id, note, created_at')
+            .eq('user_id', user.id),
+        ]);
 
       if (surahCountRes.error) throw surahCountRes.error;
       if (progRes.error) throw progRes.error;
@@ -120,6 +169,60 @@ export function HomeDashboard() {
         progressVerse = (verseRes.data as QuranVerse | null) ?? null;
       }
 
+      // Compute accurate Khatmah progress (overlaying any queued offline ops)
+      const serverPlans = (khatmahPlansRes.data as KhatmahPlan[] | null) ?? [];
+      const serverLogs = (khatmahLogsRes.data as KhatmahReadingLog[] | null) ?? [];
+      const ops = await getQueuedOps(user.id);
+      const planMap = new Map<string, KhatmahPlan>(serverPlans.map((p) => [p.id, p]));
+      const mergedLogs = [...serverLogs];
+      const seenLogKeys = new Set(
+        serverLogs.map((l) => `${l.plan_id}:${makeRangeKey(l.start_verse_id, l.end_verse_id)}`)
+      );
+
+      for (const op of ops) {
+        if (op.type === 'khatmah_plan_create') {
+          const p = op.payload as unknown as KhatmahPlan;
+          if (!planMap.has(p.id)) planMap.set(p.id, { ...p, user_id: user.id, completed_at: null });
+        } else if (op.type === 'khatmah_plan_status') {
+          const { plan_id, status, completed_at, updated_at } = op.payload as {
+            plan_id: string;
+            status: KhatmahPlan['status'];
+            completed_at: string | null;
+            updated_at: string;
+          };
+          const existing = planMap.get(plan_id);
+          if (existing) {
+            planMap.set(plan_id, { ...existing, status, completed_at, updated_at });
+          }
+        } else if (op.type === 'khatmah_reading_log') {
+          const l = op.payload as unknown as KhatmahReadingLog;
+          const k = `${l.plan_id}:${makeRangeKey(l.start_verse_id, l.end_verse_id)}`;
+          if (!seenLogKeys.has(k)) {
+            seenLogKeys.add(k);
+            mergedLogs.push({ ...l, user_id: user.id });
+          }
+        }
+      }
+
+      const allPlans = Array.from(planMap.values());
+      const activeKhatmahPlan = allPlans.find((p) => p.status === 'active') ?? null;
+      let khatmahProgress: KhatmahProgressStats | null = null;
+
+      if (activeKhatmahPlan) {
+        const { data: schedData } = await supabase
+          .from('quran_khatmah_daily_schedule')
+          .select('plan_id, user_id, plan_name, status, day_number, scheduled_date, start_verse_id, end_verse_id, target_verses')
+          .eq('plan_id', activeKhatmahPlan.id)
+          .eq('user_id', user.id)
+          .order('day_number', { ascending: true });
+        const sched =
+          schedData && schedData.length > 0
+            ? (schedData as KhatmahDailyScheduleRow[])
+            : buildOfflineKhatmahSchedule(activeKhatmahPlan);
+        const planLogs = mergedLogs.filter((l) => l.plan_id === activeKhatmahPlan.id);
+        khatmahProgress = computeKhatmahProgress(sched, planLogs, getMogadishuDateString());
+      }
+
       const adhkarSum = (adhkarRes.data ?? []).reduce((acc, row) => acc + (row.count || 0), 0);
       const tasbihSum = (tasbihRes.data ?? []).reduce((acc, row) => acc + (row.count || 0), 0);
 
@@ -127,7 +230,7 @@ export function HomeDashboard() {
         setGoalInput(String(goalRes.data.target_count));
       }
 
-      setData({
+      const nextData: DashboardData = {
         surahsCount: surahCountRes.count ?? 114,
         progress: progRes.data ?? null,
         progressSurah,
@@ -136,13 +239,83 @@ export function HomeDashboard() {
         adhkarTodayCount: adhkarSum,
         tasbihTodayCount: tasbihSum,
         reminders: remRes.data ?? [],
-      });
+        activeKhatmahPlan,
+        khatmahProgress,
+      };
+      setData(nextData);
+      await setCachedValue(cacheKey, nextData);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load dashboard');
+      const [cached, cachedKPlans, cachedKLogs, ops] = await Promise.all([
+        getCachedValue<DashboardData>(cacheKey),
+        getCachedValue<KhatmahPlan[]>(`khatmah:plans:${user.id}`),
+        getCachedValue<KhatmahReadingLog[]>(`khatmah:logs:${user.id}`),
+        getQueuedOps(user.id),
+      ]);
+
+      const planMap = new Map<string, KhatmahPlan>((cachedKPlans ?? []).map((p) => [p.id, p]));
+      const mergedLogs = [...(cachedKLogs ?? [])];
+      const seenLogKeys = new Set(
+        mergedLogs.map((l) => `${l.plan_id}:${makeRangeKey(l.start_verse_id, l.end_verse_id)}`)
+      );
+
+      for (const op of ops) {
+        if (op.type === 'khatmah_plan_create') {
+          const p = op.payload as unknown as KhatmahPlan;
+          if (!planMap.has(p.id)) planMap.set(p.id, { ...p, user_id: user.id, completed_at: null });
+        } else if (op.type === 'khatmah_plan_status') {
+          const { plan_id, status, completed_at, updated_at } = op.payload as {
+            plan_id: string;
+            status: KhatmahPlan['status'];
+            completed_at: string | null;
+            updated_at: string;
+          };
+          const existing = planMap.get(plan_id);
+          if (existing) {
+            planMap.set(plan_id, { ...existing, status, completed_at, updated_at });
+          }
+        } else if (op.type === 'khatmah_reading_log') {
+          const l = op.payload as unknown as KhatmahReadingLog;
+          const k = `${l.plan_id}:${makeRangeKey(l.start_verse_id, l.end_verse_id)}`;
+          if (!seenLogKeys.has(k)) {
+            seenLogKeys.add(k);
+            mergedLogs.push({ ...l, user_id: user.id });
+          }
+        }
+      }
+
+      const activeKhatmahPlan =
+        Array.from(planMap.values()).find((p) => p.status === 'active') ??
+        cached?.activeKhatmahPlan ??
+        null;
+      let khatmahProgress = cached?.khatmahProgress ?? null;
+      if (activeKhatmahPlan) {
+        const cachedSched = await getCachedValue<KhatmahDailyScheduleRow[]>(
+          `khatmah:schedule:${user.id}:${activeKhatmahPlan.id}`
+        );
+        const sched =
+          cachedSched && cachedSched.length > 0
+            ? cachedSched
+            : buildOfflineKhatmahSchedule(activeKhatmahPlan);
+        const planLogs = mergedLogs.filter((l) => l.plan_id === activeKhatmahPlan.id);
+        khatmahProgress = computeKhatmahProgress(sched, planLogs, getMogadishuDateString());
+      }
+
+      if (cached) {
+        setData({ ...cached, activeKhatmahPlan, khatmahProgress });
+        if (cached.dailyGoal) {
+          setGoalInput(String(cached.dailyGoal.target_count));
+        }
+      } else if (activeKhatmahPlan) {
+        setData((prev) => ({ ...prev, activeKhatmahPlan, khatmahProgress }));
+      } else if (!isOnline) {
+        setError(t.offline.offlineBadge);
+      } else {
+        setError(err instanceof Error ? err.message : 'Failed to load dashboard');
+      }
     } finally {
       setLoading(false);
     }
-  }, [user, todayStr]);
+  }, [user, todayStr, isOnline, t.offline.offlineBadge]);
 
   useEffect(() => {
     loadDashboard();
@@ -152,8 +325,38 @@ export function HomeDashboard() {
     e.preventDefault();
     if (!user) return;
     const parsed = Math.max(1, Math.min(10000, parseInt(goalInput, 10) || 33));
+    const nowIso = new Date().toISOString();
     setSavingGoal(true);
+
+    const optimisticGoal: DailyGoal = {
+      id: data.dailyGoal?.id ?? `local_${todayStr}`,
+      user_id: user.id,
+      goal_date: todayStr,
+      target_count: parsed,
+      created_at: data.dailyGoal?.created_at ?? nowIso,
+      updated_at: nowIso,
+    };
+
+    const queueLocally = async () => {
+      await enqueueSyncOp(user.id, 'daily_goal', `daily_goal:${user.id}:${todayStr}`, {
+        goal_date: todayStr,
+        target_count: parsed,
+        updated_at: nowIso,
+      });
+      setData((prev) => {
+        const next = { ...prev, dailyGoal: optimisticGoal };
+        void setCachedValue(`dashboard:${user.id}:${todayStr}`, next);
+        return next;
+      });
+      setEditingGoal(false);
+      showToast(t.account.dailyGoalSaved, 'info');
+    };
+
     try {
+      if (!isOnline) {
+        await queueLocally();
+        return;
+      }
       const { data: saved, error: upsertErr } = await supabase
         .from('daily_goals')
         .upsert(
@@ -161,18 +364,26 @@ export function HomeDashboard() {
             user_id: user.id,
             goal_date: todayStr,
             target_count: parsed,
-            updated_at: new Date().toISOString(),
+            updated_at: nowIso,
           },
           { onConflict: 'user_id,goal_date' }
         )
         .select('*')
         .single();
       if (upsertErr) throw upsertErr;
-      setData((prev) => ({ ...prev, dailyGoal: saved }));
+      setData((prev) => {
+        const next = { ...prev, dailyGoal: saved };
+        void setCachedValue(`dashboard:${user.id}:${todayStr}`, next);
+        return next;
+      });
       setEditingGoal(false);
       showToast(t.account.dailyGoalSaved, 'success');
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Error saving goal', 'error');
+      if (!isOnline || (err instanceof TypeError && err.message.toLowerCase().includes('fetch'))) {
+        await queueLocally();
+      } else {
+        showToast(err instanceof Error ? err.message : 'Error saving goal', 'error');
+      }
     } finally {
       setSavingGoal(false);
     }
@@ -259,6 +470,77 @@ export function HomeDashboard() {
           </button>
         </div>
       </div>
+
+      {/* Android App Update Banner */}
+      {updateStatus !== 'none' && latestAndroidVersion && (
+        <div
+          className={`rounded-2xl border p-4 sm:px-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+            updateStatus === 'mandatory'
+              ? 'border-[#FECACA] dark:border-[#7F1D1D] bg-[#FEF2F2] dark:bg-[#2A1215]'
+              : 'border-[#D8CEB8] dark:border-[#244A3C] bg-[#F5F1E6] dark:bg-[#0C1F19]'
+          }`}
+        >
+          <div className="flex items-start gap-3">
+            {updateStatus === 'mandatory' ? (
+              <AlertTriangle className="w-5 h-5 text-[#991B1B] dark:text-[#FCA5A5] shrink-0 mt-0.5" />
+            ) : (
+              <Download className="w-5 h-5 text-[#064E3B] dark:text-[#34D399] shrink-0 mt-0.5" />
+            )}
+            <div className="space-y-0.5">
+              <p className="text-sm font-semibold text-[#14241E] dark:text-[#F2EFE9]">
+                {t.updates.title} · v{latestAndroidVersion.version_name}
+              </p>
+              {pickLocalizedText(latestAndroidVersion.release_notes, lang) && (
+                <p className="text-xs text-[#52635C] dark:text-[#A3B8AF] line-clamp-2">
+                  {pickLocalizedText(latestAndroidVersion.release_notes, lang)}
+                </p>
+              )}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setUpdateModalOpen(true)}
+            className="min-h-[40px] px-4 py-2 rounded-xl bg-[#064E3B] text-white dark:bg-[#10B981] dark:text-[#071410] text-xs font-semibold whitespace-nowrap self-start sm:self-auto"
+          >
+            {t.updates.downloadApk}
+          </button>
+        </div>
+      )}
+
+      {/* Active Remote Announcements */}
+      {activeAnnouncements.length > 0 && (
+        <section className="space-y-2.5" aria-label="Announcements">
+          {activeAnnouncements.map((ann) => {
+            const titleText = pickLocalizedText(ann.title, lang);
+            const bodyText = pickLocalizedText(ann.body, lang);
+            const isWarning = ann.announcement_type === 'warning' || ann.announcement_type === 'maintenance';
+            return (
+              <div
+                key={ann.id}
+                className={`rounded-2xl border p-4 sm:px-5 flex items-start gap-3 ${
+                  isWarning
+                    ? 'border-[#E6CFA0] dark:border-[#5C4820] bg-[#FDF6E7] dark:bg-[#231D11]'
+                    : 'border-[#E5DFD3] dark:border-[#1B3A2F] bg-white dark:bg-[#0C1F19]'
+                }`}
+              >
+                <Megaphone className="w-4 h-4 text-[#B48A3E] dark:text-[#D4AF6A] shrink-0 mt-1" />
+                <div className="space-y-1 min-w-0">
+                  {titleText && (
+                    <h2 className="text-sm font-semibold text-[#14241E] dark:text-[#F2EFE9]">
+                      {titleText}
+                    </h2>
+                  )}
+                  {bodyText && (
+                    <p className="text-xs sm:text-sm text-[#52635C] dark:text-[#A3B8AF] leading-relaxed">
+                      {bodyText}
+                    </p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </section>
+      )}
 
       {/* Primary Hero Anchor: Sanctuary Backdrop + Recently Read Verse */}
       <motion.section
@@ -455,6 +737,89 @@ export function HomeDashboard() {
           </button>
         </div>
       )}
+
+      {/* Khatmadda Qur'aanka Entry Card */}
+      <section className="rounded-2xl border border-[#E5DFD3] dark:border-[#1B3A2F] bg-white dark:bg-[#0C1F19] p-6">
+        {data.activeKhatmahPlan && data.khatmahProgress ? (
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+            <div className="space-y-3 flex-1 min-w-0">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-[#52635C] dark:text-[#8FA89E] tabular-nums">
+                <span className="font-semibold text-[#064E3B] dark:text-[#34D399]">
+                  {t.khatmah.title}
+                </span>
+                <span aria-hidden="true">·</span>
+                <span>
+                  {data.activeKhatmahPlan.duration_days} {t.khatmah.daysUnit}
+                </span>
+                <span aria-hidden="true">·</span>
+                <span>
+                  {formatShortDate(
+                    calculateTargetEndDate(
+                      data.activeKhatmahPlan.start_date,
+                      data.activeKhatmahPlan.duration_days
+                    ),
+                    lang
+                  )}
+                </span>
+              </div>
+
+              <div className="flex items-baseline justify-between gap-3">
+                <h2 className="font-display text-lg sm:text-xl font-semibold text-[#14241E] dark:text-[#F2EFE9] truncate">
+                  {data.activeKhatmahPlan.name}
+                </h2>
+                <span className="text-xl font-bold tabular-nums text-[#064E3B] dark:text-[#34D399] shrink-0">
+                  {data.khatmahProgress.completionPercentage}%
+                </span>
+              </div>
+
+              <div className="h-2.5 w-full rounded-full bg-[#EFECE4] dark:bg-[#143328] overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-[#064E3B] dark:bg-[#10B981] transition-all duration-300"
+                  style={{ width: `${Math.min(100, data.khatmahProgress.completionPercentage)}%` }}
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center gap-4 text-xs text-[#52635C] dark:text-[#A3B8AF] tabular-nums">
+                <span>
+                  {t.khatmah.completedDaysLabel}: {data.khatmahProgress.completedDaysCount}/
+                  {data.khatmahProgress.totalDays}
+                </span>
+                <span>
+                  {t.khatmah.remainingDaysLabel}: {data.khatmahProgress.remainingDaysCount}
+                </span>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={openKhatmah}
+              className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#064E3B] text-white dark:bg-[#10B981] dark:text-[#071410] text-sm font-semibold inline-flex items-center justify-center gap-2 hover:opacity-95 shrink-0 whitespace-nowrap"
+            >
+              <span>{t.khatmah.openTracker}</span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          </div>
+        ) : (
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <h2 className="font-display text-lg font-semibold text-[#14241E] dark:text-[#F2EFE9]">
+                {t.khatmah.title}
+              </h2>
+              <p className="text-sm text-[#52635C] dark:text-[#A3B8AF]">
+                {t.khatmah.homeCardEmptyDesc}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={openKhatmah}
+              className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#064E3B] text-white dark:bg-[#10B981] dark:text-[#071410] text-sm font-semibold inline-flex items-center justify-center gap-2 hover:opacity-95 shrink-0 whitespace-nowrap"
+            >
+              <span>{t.khatmah.homeCardCtaEmpty}</span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+      </section>
 
       {/* Quick Access Trio */}
       <section className="space-y-4">

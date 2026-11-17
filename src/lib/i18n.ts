@@ -170,6 +170,108 @@ export interface Translations {
       quran: string;
       custom: string;
     };
+    appVersionLabel: string;
+    contentSourcesTitle: string;
+  };
+  offline: {
+    offlineBadge: string;
+    onlineBadge: string;
+    pendingSync: string;
+    syncing: string;
+    syncNow: string;
+    syncError: string;
+    syncedSuccess: string;
+    cachedOfflineHint: string;
+    cacheAllQuran: string;
+    cachingQuran: string;
+    quranCachedCount: string;
+  };
+  maintenance: {
+    title: string;
+    defaultMessage: string;
+    expectedEnd: string;
+  };
+  updates: {
+    title: string;
+    mandatoryBadge: string;
+    optionalBadge: string;
+    currentVersion: string;
+    latestVersion: string;
+    minSupported: string;
+    releaseNotes: string;
+    downloadApk: string;
+    noApkUrl: string;
+    androidLimitationsTitle: string;
+    androidLimitationsBody: string;
+    confirmDownload: string;
+    upToDate: string;
+    checkUpdates: string;
+  };
+  khatmah: {
+    title: string;
+    tabLabel: string;
+    subtitle: string;
+    introTitle: string;
+    introBody: string;
+    startBtn: string;
+    createTitle: string;
+    planNameLabel: string;
+    planNamePlaceholder: string;
+    durationLabel: string;
+    daysUnit: string;
+    versesPerDayApprox: string;
+    startDateLabel: string;
+    targetEndDateLabel: string;
+    confirmCreate: string;
+    creating: string;
+    activePlanExistsErr: string;
+    planCreated: string;
+    planPaused: string;
+    planResumed: string;
+    planCompletedToast: string;
+    progressTitle: string;
+    completedDaysLabel: string;
+    remainingDaysLabel: string;
+    versesCompletedLabel: string;
+    todayPlanTitle: string;
+    continueReading: string;
+    markCompleted: string;
+    confirmCompleteTitle: string;
+    confirmCompleteBody: string;
+    confirmCompleteAction: string;
+    alreadyCompleted: string;
+    completedSuccess: string;
+    queuedOfflineSuccess: string;
+    pauseBtn: string;
+    resumeBtn: string;
+    pauseConfirmBody: string;
+    scheduleTitle: string;
+    plansTitle: string;
+    historyTitle: string;
+    filterAll: string;
+    filterRemaining: string;
+    filterCompleted: string;
+    dayPrefix: string;
+    versesCountUnit: string;
+    statusCompleted: string;
+    statusCurrent: string;
+    statusUpcoming: string;
+    statusActive: string;
+    statusPaused: string;
+    statusDone: string;
+    statusCancelled: string;
+    noSchedule: string;
+    noPlans: string;
+    noHistory: string;
+    pausedNotice: string;
+    completedBannerTitle: string;
+    completedBannerBody: string;
+    queuedSyncNote: string;
+    duplicateLogError: string;
+    homeCardCtaEmpty: string;
+    homeCardEmptyDesc: string;
+    openTracker: string;
+    allDaysDone: string;
   };
 }
 
@@ -347,6 +449,116 @@ export const translations: Record<AppLang, Translations> = {
         quran: 'Akhrinta Qur’aanka',
         custom: 'Xasuusin Gaar Ah',
       },
+      appVersionLabel: 'Nooca Barnaamijka (Android)',
+      contentSourcesTitle: 'Ilaha Nuxurka Rasmiga Ah',
+    },
+    offline: {
+      offlineBadge: 'Khad la’aan (Offline)',
+      onlineBadge: 'Khadka ku xiran',
+      pendingSync: 'kayd aan weli la iswaafajin',
+      syncing: 'Waa la iswaafajinayaa...',
+      syncNow: 'Iswaafaji Hadda',
+      syncError: 'Khalad iswaafajin',
+      syncedSuccess: 'Xogtaada waa la iswaafajiyay.',
+      cachedOfflineHint: 'Waxaa laga soo akhriyay kaydka qalabka (offline).',
+      cacheAllQuran: 'U Kaydi Qur’aanka Offline',
+      cachingQuran: 'Waa la kaydinayaa...',
+      quranCachedCount: 'suuradood oo kaydsan',
+    },
+    maintenance: {
+      title: 'Dayactir & Cusboonaysiin',
+      defaultMessage: 'NUUR si ku-meel-gaar ah ayuu u xiran yahay. Fadlan dib u soo noqo.',
+      expectedEnd: 'Waqtiga la filayo inuu soo noqdo',
+    },
+    updates: {
+      title: 'Cusboonaysiin Android ah ayaa diyaar ah',
+      mandatoryBadge: 'Cusboonaysiin Khasab ah',
+      optionalBadge: 'Nooc Cusub',
+      currentVersion: 'Nooca Hadda Kuu Jira',
+      latestVersion: 'Nooca Ugu Dambeeya',
+      minSupported: 'Ugu yaraan la taageero',
+      releaseNotes: 'Waxyaabaha Cusub',
+      downloadApk: 'Soo Deji APK (HTTPS)',
+      noApkUrl: 'Xiriirka soo dejinta APK weli lama darin.',
+      androidLimitationsTitle: 'Tilmaamaha Rakibidda Android APK',
+      androidLimitationsBody:
+        'Barnaamijku si qarsoodi ah uma rakibi karo APK. Marka aad xaqiijiso, biraawsarkaaga dibadda ayaa furi doona xiriirka HTTPS si aad u soo dejiso una xaqiijiso rakibidda Android (Install Unknown Apps haddii loo baahdo).',
+      confirmDownload: 'Xaqiiji & Fur Soo Dejinta',
+      upToDate: 'Barnaamijkaagu waa midka ugu dambeeya.',
+      checkUpdates: 'Hubi Cusboonaysiinta',
+    },
+    khatmah: {
+      title: 'Khatmadda Qur’aanka',
+      tabLabel: 'Khatmadda',
+      subtitle: 'Qorshee oo la soco dhammaystirka Qur’aanka Kariimka maalin kasta.',
+      introTitle: 'Bilow Khatmad Cusub oo Qur’aan ah',
+      introBody:
+        'Dooro qorshe 30, 60 ama 90 maalmood ah si loo qaybiyo dhammaan 6,236-da aayadood ee Qur’aanka Kariimka, una akhri si joogto ah adigoo la soconaya horumarkaaga.',
+      startBtn: 'Bilow Khatmad',
+      createTitle: 'Abuur Qorshe Khatmad',
+      planNameLabel: 'Magaca Qorshaha (Ikhtiyaari)',
+      planNamePlaceholder: 'Tusaale: Khatmadda Bishan',
+      durationLabel: 'Muddada Qorshaha',
+      daysUnit: 'maalmood',
+      versesPerDayApprox: 'aayadood/maalintii qiyaastii',
+      startDateLabel: 'Taariikhda Bilowga',
+      targetEndDateLabel: 'Taariikhda Dhammaadka La Qorsheeyay',
+      confirmCreate: 'Bilow Khatmad',
+      creating: 'Waa la samaynayaa...',
+      activePlanExistsErr:
+        'Waxaad horay u leedahay qorshe Khatmad ah oo firfircoon. Fadlan sii wad ama hakad geli ka hor intaadan mid cusub bilaabin.',
+      planCreated: 'Qorshaha Khatmadda waa la bilaabay.',
+      planPaused: 'Qorshaha Khatmadda waa la hakiyay.',
+      planResumed: 'Qorshaha Khatmadda dib ayaa loo bilaabay.',
+      planCompletedToast: 'MaashaAllaah! Khatmadda Qur’aanka oo dhan waad dhammaysay.',
+      progressTitle: 'Horumarka Khatmadda',
+      completedDaysLabel: 'Maalmaha Dhammaystiran',
+      remainingDaysLabel: 'Maalmaha Haray',
+      versesCompletedLabel: 'Aayadaha La Akhriyay',
+      todayPlanTitle: 'Qorshaha Maanta',
+      continueReading: 'Sii wad Akhriska',
+      markCompleted: 'Maanta waan dhammeeyey',
+      confirmCompleteTitle: 'Xaqiiji Dhammaystirka Maanta',
+      confirmCompleteBody:
+        'Ma hubtaa inaad si buuxda u akhriday qaybta aayadaha ee hoos ku xusan?',
+      confirmCompleteAction: 'Haa, Waan Dhammeeyey',
+      alreadyCompleted: 'Maalintan horay ayaa loo dhammeeyey.',
+      completedSuccess: 'Alxamdulillaah! Akhrinta maanta waa la diiwaangeliyay.',
+      queuedOfflineSuccess:
+        'Akhrinta maanta waxaa lagu kaydiyay qalabka, waana la iswaafajin doonaa marka khadku soo noqdo.',
+      pauseBtn: 'Hakad geli',
+      resumeBtn: 'Dib u bilow',
+      pauseConfirmBody:
+        'Haddii aad hakad geliso qorshahan, horumarkaagu wuu kuu kaydsanaanayaa waxaadna dib u bilaabi kartaa mar kasta.',
+      scheduleTitle: 'Jadwalka Maalinlaha Ah',
+      plansTitle: 'Qorshayaasha Khatmadda',
+      historyTitle: 'Taariikhda Akhriska',
+      filterAll: 'Dhammaan',
+      filterRemaining: 'Haray',
+      filterCompleted: 'Dhammaystiran',
+      dayPrefix: 'Maalinta',
+      versesCountUnit: 'aayadood',
+      statusCompleted: 'Dhammaystiran',
+      statusCurrent: 'Hadda',
+      statusUpcoming: 'Sugaya',
+      statusActive: 'Firfircoon',
+      statusPaused: 'Hakanaya',
+      statusDone: 'La Dhammeeyey',
+      statusCancelled: 'La Joojiyay',
+      noSchedule: 'Jadwal looma helin qorshahan.',
+      noPlans: 'Weli ma aadan samaysan qorshe Khatmad ah.',
+      noHistory: 'Weli ma jiro akhrin Khatmad ah oo la diiwaangeliyay.',
+      pausedNotice:
+        'Qorshahan hadda wuu hakanayaa. Riix "Dib u bilow" si aad u sii waddo.',
+      completedBannerTitle: 'Khatmaddu Way Dhammaystirantahay',
+      completedBannerBody:
+        'Dhammaan 6,236-da aayadood ee jadwalkan waa la dhammaystiray. Waxaad bilaabi kartaa Khatmad cusub goor kasta.',
+      queuedSyncNote: 'Sugaya iswaafajinta (Offline)',
+      duplicateLogError: 'Qaybtan horay ayaa loo diiwaangeliyay.',
+      homeCardCtaEmpty: 'Bilow Khatmad',
+      homeCardEmptyDesc: 'Deji yool 30, 60 ama 90 maalmood ah oo la soco akhrintaada.',
+      openTracker: 'Fur Khatmadda',
+      allDaysDone: 'Dhammaan maalmaha qorshahan waa la dhammaystiray.',
     },
   },
   en: {
@@ -522,6 +734,116 @@ export const translations: Record<AppLang, Translations> = {
         quran: 'Quran Reading',
         custom: 'Custom Reminder',
       },
+      appVersionLabel: 'Android App Version',
+      contentSourcesTitle: 'Verified Content Sources',
+    },
+    offline: {
+      offlineBadge: 'Offline Mode',
+      onlineBadge: 'Online',
+      pendingSync: 'pending sync',
+      syncing: 'Syncing...',
+      syncNow: 'Sync Now',
+      syncError: 'Sync error',
+      syncedSuccess: 'All queued progress synced.',
+      cachedOfflineHint: 'Loaded from local device cache (offline).',
+      cacheAllQuran: 'Save Quran for Offline',
+      cachingQuran: 'Caching...',
+      quranCachedCount: 'Surahs cached',
+    },
+    maintenance: {
+      title: 'Scheduled Maintenance',
+      defaultMessage: 'NUUR is temporarily closed for maintenance. Please check back shortly.',
+      expectedEnd: 'Expected completion',
+    },
+    updates: {
+      title: 'Android Update Available',
+      mandatoryBadge: 'Mandatory Update',
+      optionalBadge: 'New Release',
+      currentVersion: 'Installed Version',
+      latestVersion: 'Latest Release',
+      minSupported: 'Minimum Supported',
+      releaseNotes: 'Release Notes',
+      downloadApk: 'Download APK (HTTPS)',
+      noApkUrl: 'No verified HTTPS APK URL has been published for this release.',
+      androidLimitationsTitle: 'Android APK Installation Notice',
+      androidLimitationsBody:
+        'Apps cannot silently install APK updates. After confirmation, your device browser will open the HTTPS link so you can download and approve the Android Package Installer prompt (and allow "Install unknown apps" if prompted by Android).',
+      confirmDownload: 'Confirm & Open Download',
+      upToDate: 'Your installed version is up to date.',
+      checkUpdates: 'Check for Updates',
+    },
+    khatmah: {
+      title: 'Khatmadda Qur’aanka',
+      tabLabel: 'Khatmah',
+      subtitle: 'Plan and track your complete Quran recitation day by day.',
+      introTitle: 'Start a New Quran Khatmah',
+      introBody:
+        'Choose a 30, 60, or 90-day schedule across all 6,236 verses of the Holy Quran and track every completed daily portion.',
+      startBtn: 'Bilow Khatmad',
+      createTitle: 'Create Khatmah Plan',
+      planNameLabel: 'Plan Name (Optional)',
+      planNamePlaceholder: 'e.g. Monthly Quran Khatmah',
+      durationLabel: 'Duration',
+      daysUnit: 'days',
+      versesPerDayApprox: 'verses/day avg',
+      startDateLabel: 'Start Date',
+      targetEndDateLabel: 'Target Completion Date',
+      confirmCreate: 'Bilow Khatmad',
+      creating: 'Creating...',
+      activePlanExistsErr:
+        'You already have an active Khatmah plan. Please resume or pause it before creating a new one.',
+      planCreated: 'Khatmah plan started.',
+      planPaused: 'Khatmah plan paused.',
+      planResumed: 'Khatmah plan resumed.',
+      planCompletedToast: 'MashaAllah! You completed the entire 6,236-verse Khatmah.',
+      progressTitle: 'Horumarka Khatmadda',
+      completedDaysLabel: 'Completed Days',
+      remainingDaysLabel: 'Remaining Days',
+      versesCompletedLabel: 'Verses Completed',
+      todayPlanTitle: 'Qorshaha Maanta',
+      continueReading: 'Sii wad Akhriska',
+      markCompleted: 'Maanta waan dhammeeyey',
+      confirmCompleteTitle: 'Confirm Daily Completion',
+      confirmCompleteBody:
+        'Confirm that you have completed reading the full verse range shown below.',
+      confirmCompleteAction: 'Yes, Mark Completed',
+      alreadyCompleted: 'This daily target is already completed.',
+      completedSuccess: 'Alhamdulillah! Daily Khatmah reading recorded.',
+      queuedOfflineSuccess:
+        'Saved offline. Your completion will sync automatically when connectivity returns.',
+      pauseBtn: 'Hakad geli',
+      resumeBtn: 'Dib u bilow',
+      pauseConfirmBody:
+        'Pausing keeps all your recorded progress safe so you can resume anytime.',
+      scheduleTitle: 'Daily Reading Schedule',
+      plansTitle: 'Khatmah Plans',
+      historyTitle: 'Reading History',
+      filterAll: 'All',
+      filterRemaining: 'Remaining',
+      filterCompleted: 'Completed',
+      dayPrefix: 'Day',
+      versesCountUnit: 'verses',
+      statusCompleted: 'Completed',
+      statusCurrent: 'Current',
+      statusUpcoming: 'Upcoming',
+      statusActive: 'Active',
+      statusPaused: 'Paused',
+      statusDone: 'Completed',
+      statusCancelled: 'Cancelled',
+      noSchedule: 'No schedule found for this plan.',
+      noPlans: 'No Khatmah plans created yet.',
+      noHistory: 'No Khatmah reading logs recorded yet.',
+      pausedNotice:
+        'This plan is currently paused. Tap "Dib u bilow" to resume it.',
+      completedBannerTitle: 'Khatmah Completed',
+      completedBannerBody:
+        'All 6,236 verses in this schedule have been completed. You can start a new Khatmah plan anytime.',
+      queuedSyncNote: 'Pending offline sync',
+      duplicateLogError: 'This reading range has already been logged.',
+      homeCardCtaEmpty: 'Bilow Khatmad',
+      homeCardEmptyDesc: 'Set a 30, 60, or 90-day Quran completion plan and track daily progress.',
+      openTracker: 'Open Khatmah',
+      allDaysDone: 'All scheduled days for this plan are completed.',
     },
   },
 };

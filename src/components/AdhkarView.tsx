@@ -8,9 +8,10 @@ import {
   type UserProgress,
 } from '../lib/supabase';
 import { getTodayDateString } from '../lib/i18n';
+import { enqueueSyncOp, getCachedValue, setCachedValue } from '../lib/offlineStore';
 
 export function AdhkarView() {
-  const { user, profile, lang, t, showToast } = useApp();
+  const { user, profile, lang, t, showToast, isOnline } = useApp();
 
   const [categories, setCategories] = useState<AdhkarCategory[]>([]);
   const [items, setItems] = useState<AdhkarItem[]>([]);
@@ -47,10 +48,25 @@ export function AdhkarView() {
       if (catsRes.error) throw catsRes.error;
       if (itemsRes.error) throw itemsRes.error;
 
-      setCategories(catsRes.data ?? []);
-      setItems(itemsRes.data ?? []);
+      const catsList = catsRes.data ?? [];
+      const itemsList = itemsRes.data ?? [];
+      setCategories(catsList);
+      setItems(itemsList);
+      await Promise.all([
+        setCachedValue('adhkar:categories', catsList),
+        setCachedValue('adhkar:items', itemsList),
+      ]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load Adhkar');
+      const [cachedCats, cachedItems] = await Promise.all([
+        getCachedValue<AdhkarCategory[]>('adhkar:categories'),
+        getCachedValue<AdhkarItem[]>('adhkar:items'),
+      ]);
+      if (cachedCats && cachedItems) {
+        setCategories(cachedCats);
+        setItems(cachedItems);
+      } else {
+        setError(err instanceof Error ? err.message : 'Failed to load Adhkar');
+      }
     } finally {
       setLoading(false);
     }
@@ -66,28 +82,49 @@ export function AdhkarView() {
 
   const fetchUserAdhkarState = useCallback(async () => {
     if (!user) return;
-    const [favRes, progRes] = await Promise.all([
-      supabase.from('favorites').select('adhkar_item_id').eq('user_id', user.id),
-      supabase
-        .from('user_progress')
-        .select('id, user_id, adhkar_item_id, progress_date, count, updated_at')
-        .eq('user_id', user.id)
-        .eq('progress_date', todayStr),
-    ]);
+    const favCacheKey = `adhkar:favorites:${user.id}`;
+    const progCacheKey = `adhkar:progress:${user.id}:${todayStr}`;
+    try {
+      const [favRes, progRes] = await Promise.all([
+        supabase.from('favorites').select('adhkar_item_id').eq('user_id', user.id),
+        supabase
+          .from('user_progress')
+          .select('id, user_id, adhkar_item_id, progress_date, count, updated_at')
+          .eq('user_id', user.id)
+          .eq('progress_date', todayStr),
+      ]);
 
-    if (!isMountedRef.current) return;
-    if (!favRes.error && favRes.data) {
-      setFavoriteIds(new Set(favRes.data.map((r) => r.adhkar_item_id)));
-    }
-    if (!progRes.error && progRes.data) {
-      const byItem: Record<string, UserProgress> = {};
-      const countMap: Record<string, number> = {};
-      progRes.data.forEach((row) => {
-        byItem[row.adhkar_item_id] = row;
-        countMap[row.adhkar_item_id] = row.count;
-      });
-      setProgressRows(byItem);
-      setLocalCounts(countMap);
+      if (!isMountedRef.current) return;
+      if (!favRes.error && favRes.data) {
+        const favArr = favRes.data.map((r) => r.adhkar_item_id);
+        setFavoriteIds(new Set(favArr));
+        await setCachedValue(favCacheKey, favArr);
+      } else {
+        const cachedFavs = await getCachedValue<string[]>(favCacheKey);
+        if (cachedFavs) setFavoriteIds(new Set(cachedFavs));
+      }
+      if (!progRes.error && progRes.data) {
+        const byItem: Record<string, UserProgress> = {};
+        const countMap: Record<string, number> = {};
+        progRes.data.forEach((row) => {
+          byItem[row.adhkar_item_id] = row;
+          countMap[row.adhkar_item_id] = row.count;
+        });
+        setProgressRows(byItem);
+        setLocalCounts(countMap);
+        await setCachedValue(progCacheKey, countMap);
+      } else {
+        const cachedCounts = await getCachedValue<Record<string, number>>(progCacheKey);
+        if (cachedCounts) setLocalCounts(cachedCounts);
+      }
+    } catch {
+      const [cachedFavs, cachedCounts] = await Promise.all([
+        getCachedValue<string[]>(favCacheKey),
+        getCachedValue<Record<string, number>>(progCacheKey),
+      ]);
+      if (!isMountedRef.current) return;
+      if (cachedFavs) setFavoriteIds(new Set(cachedFavs));
+      if (cachedCounts) setLocalCounts(cachedCounts);
     }
   }, [user, todayStr]);
 
@@ -122,31 +159,55 @@ export function AdhkarView() {
       if (!user) return;
       delete pendingProgressRef.current[itemId];
       const nowIso = new Date().toISOString();
-      const { data, error: upsertErr } = await supabase
-        .from('user_progress')
-        .upsert(
+      const queueOffline = async () => {
+        await enqueueSyncOp(
+          user.id,
+          'adhkar_progress',
+          `adhkar:${user.id}:${todayStr}:${itemId}`,
           {
-            user_id: user.id,
             adhkar_item_id: itemId,
             progress_date: todayStr,
             count: nextCount,
             updated_at: nowIso,
-          },
-          { onConflict: 'user_id,adhkar_item_id,progress_date' }
-        )
-        .select('*')
-        .single();
+          }
+        );
+      };
 
-      if (!isMountedRef.current) return;
-      if (upsertErr) {
-        showToast(upsertErr.message, 'error');
+      if (!isOnline) {
+        await queueOffline();
         return;
       }
-      if (data) {
-        setProgressRows((prev) => ({ ...prev, [itemId]: data }));
+
+      try {
+        const { data, error: upsertErr } = await supabase
+          .from('user_progress')
+          .upsert(
+            {
+              user_id: user.id,
+              adhkar_item_id: itemId,
+              progress_date: todayStr,
+              count: nextCount,
+              updated_at: nowIso,
+            },
+            { onConflict: 'user_id,adhkar_item_id,progress_date' }
+          )
+          .select('*')
+          .single();
+
+        if (upsertErr) throw upsertErr;
+        if (!isMountedRef.current) return;
+        if (data) {
+          setProgressRows((prev) => ({ ...prev, [itemId]: data }));
+        }
+      } catch (err) {
+        if (!isOnline || (err instanceof TypeError && err.message.toLowerCase().includes('fetch'))) {
+          await queueOffline();
+        } else if (isMountedRef.current) {
+          showToast(err instanceof Error ? err.message : 'Sync failed', 'error');
+        }
       }
     },
-    [user, todayStr, showToast]
+    [user, todayStr, isOnline, showToast]
   );
 
   useEffect(() => {
@@ -176,12 +237,20 @@ export function AdhkarView() {
   const handleTapCount = (item: AdhkarItem) => {
     const current = localCounts[item.id] ?? 0;
     const next = current + 1;
-    setLocalCounts((prev) => ({ ...prev, [item.id]: next }));
+    setLocalCounts((prev) => {
+      const updated = { ...prev, [item.id]: next };
+      if (user) void setCachedValue(`adhkar:progress:${user.id}:${todayStr}`, updated);
+      return updated;
+    });
     persistProgress(item.id, next);
   };
 
   const handleResetCount = (item: AdhkarItem) => {
-    setLocalCounts((prev) => ({ ...prev, [item.id]: 0 }));
+    setLocalCounts((prev) => {
+      const updated = { ...prev, [item.id]: 0 };
+      if (user) void setCachedValue(`adhkar:progress:${user.id}:${todayStr}`, updated);
+      return updated;
+    });
     persistProgress(item.id, 0);
   };
 

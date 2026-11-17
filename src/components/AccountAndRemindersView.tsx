@@ -8,10 +8,14 @@ import {
   SlidersHorizontal,
   Target,
   Trash2,
+  Smartphone,
+  ExternalLink,
+  BookOpen,
 } from 'lucide-react';
 import { useApp } from '../contexts/AppContext';
-import { supabase, type DailyGoal, type Reminder } from '../lib/supabase';
+import { supabase, type ContentSource, type DailyGoal, type Reminder } from '../lib/supabase';
 import { getTodayDateString, WEEKDAY_LABELS } from '../lib/i18n';
+import { enqueueSyncOp, getCachedValue, setCachedValue } from '../lib/offlineStore';
 
 const COMMON_TIMEZONES = [
   'Africa/Mogadishu',
@@ -31,7 +35,24 @@ const COMMON_TIMEZONES = [
 ];
 
 export function AccountAndRemindersView() {
-  const { user, profile, refreshProfile, lang, setLang, theme, toggleTheme, t, showToast } = useApp();
+  const {
+    user,
+    profile,
+    refreshProfile,
+    lang,
+    setLang,
+    theme,
+    toggleTheme,
+    t,
+    showToast,
+    isOnline,
+    installedVersionCode,
+    installedVersionName,
+    latestAndroidVersion,
+    updateStatus,
+    setUpdateModalOpen,
+    refreshAppConfig,
+  } = useApp();
 
   const [subTab, setSubTab] = useState<'profile' | 'reminders'>('profile');
 
@@ -46,6 +67,7 @@ export function AccountAndRemindersView() {
   const [savingGoal, setSavingGoal] = useState(false);
 
   const [stats, setStats] = useState({ bookmarks: 0, favorites: 0, tasbihSessions: 0 });
+  const [contentSources, setContentSources] = useState<ContentSource[]>([]);
 
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [remindersLoading, setRemindersLoading] = useState(false);
@@ -71,8 +93,9 @@ export function AccountAndRemindersView() {
     if (!user) return;
     setRemindersLoading(true);
     setLoadError(null);
+    const cacheKey = `account:${user.id}:${todayStr}`;
     try {
-      const [goalRes, bmRes, favRes, sesRes, remRes] = await Promise.all([
+      const [goalRes, bmRes, favRes, sesRes, remRes, srcRes] = await Promise.all([
         supabase
           .from('daily_goals')
           .select('*')
@@ -87,6 +110,7 @@ export function AccountAndRemindersView() {
           .select('*')
           .eq('user_id', user.id)
           .order('reminder_time', { ascending: true }),
+        supabase.from('content_sources').select('*').order('source_name', { ascending: true }),
       ]);
 
       if (goalRes.error) throw goalRes.error;
@@ -102,15 +126,47 @@ export function AccountAndRemindersView() {
         setDailyGoal(null);
       }
 
-      setStats({
+      const nextStats = {
         bookmarks: bmRes.count ?? 0,
         favorites: favRes.count ?? 0,
         tasbihSessions: sesRes.count ?? 0,
-      });
+      };
+      setStats(nextStats);
+      const nextReminders = remRes.data ?? [];
+      setReminders(nextReminders);
 
-      setReminders(remRes.data ?? []);
+      const nextSources = !srcRes.error && srcRes.data ? (srcRes.data as ContentSource[]) : [];
+      if (nextSources.length > 0) {
+        setContentSources(nextSources);
+        await setCachedValue('content_sources_public', nextSources);
+      } else {
+        const cachedSources = await getCachedValue<ContentSource[]>('content_sources_public');
+        if (cachedSources) setContentSources(cachedSources);
+      }
+
+      await setCachedValue(cacheKey, {
+        dailyGoal: goalRes.data ?? null,
+        stats: nextStats,
+        reminders: nextReminders,
+      });
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : 'Failed to load settings');
+      const [cachedAccount, cachedSources] = await Promise.all([
+        getCachedValue<{
+          dailyGoal: DailyGoal | null;
+          stats: { bookmarks: number; favorites: number; tasbihSessions: number };
+          reminders: Reminder[];
+        }>(cacheKey),
+        getCachedValue<ContentSource[]>('content_sources_public'),
+      ]);
+      if (cachedSources) setContentSources(cachedSources);
+      if (cachedAccount) {
+        setDailyGoal(cachedAccount.dailyGoal);
+        if (cachedAccount.dailyGoal) setGoalTarget(String(cachedAccount.dailyGoal.target_count));
+        setStats(cachedAccount.stats);
+        setReminders(cachedAccount.reminders);
+      } else {
+        setLoadError(err instanceof Error ? err.message : 'Failed to load settings');
+      }
     } finally {
       setRemindersLoading(false);
     }
@@ -148,8 +204,31 @@ export function AccountAndRemindersView() {
     e.preventDefault();
     if (!user) return;
     const parsed = Math.max(1, Math.min(10000, parseInt(goalTarget, 10) || 100));
+    const nowIso = new Date().toISOString();
     setSavingGoal(true);
+
+    const queueGoalOffline = async () => {
+      await enqueueSyncOp(user.id, 'daily_goal', `daily_goal:${user.id}:${todayStr}`, {
+        goal_date: todayStr,
+        target_count: parsed,
+        updated_at: nowIso,
+      });
+      setDailyGoal({
+        id: dailyGoal?.id ?? `local_${todayStr}`,
+        user_id: user.id,
+        goal_date: todayStr,
+        target_count: parsed,
+        created_at: dailyGoal?.created_at ?? nowIso,
+        updated_at: nowIso,
+      });
+      showToast(t.account.dailyGoalSaved, 'info');
+    };
+
     try {
+      if (!isOnline) {
+        await queueGoalOffline();
+        return;
+      }
       const { data, error } = await supabase
         .from('daily_goals')
         .upsert(
@@ -157,7 +236,7 @@ export function AccountAndRemindersView() {
             user_id: user.id,
             goal_date: todayStr,
             target_count: parsed,
-            updated_at: new Date().toISOString(),
+            updated_at: nowIso,
           },
           { onConflict: 'user_id,goal_date' }
         )
@@ -167,7 +246,11 @@ export function AccountAndRemindersView() {
       setDailyGoal(data);
       showToast(t.account.dailyGoalSaved, 'success');
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Error saving daily goal', 'error');
+      if (!isOnline || (err instanceof TypeError && err.message.toLowerCase().includes('fetch'))) {
+        await queueGoalOffline();
+      } else {
+        showToast(err instanceof Error ? err.message : 'Error saving daily goal', 'error');
+      }
     } finally {
       setSavingGoal(false);
     }
@@ -474,6 +557,87 @@ export function AccountAndRemindersView() {
               {savingGoal ? t.common.loading : t.common.save}
             </button>
           </form>
+
+          {/* Android App Version & Update Check */}
+          <section className="lg:col-span-2 rounded-2xl border border-[#E5DFD3] dark:border-[#1B3A2F] bg-white dark:bg-[#0C1F19] p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2.5">
+                <Smartphone className="w-5 h-5 text-[#064E3B] dark:text-[#34D399]" />
+                <h2 className="font-display text-lg font-semibold text-[#14241E] dark:text-[#F2EFE9]">
+                  {t.account.appVersionLabel}
+                </h2>
+                <span className="text-xs font-semibold tabular-nums text-[#52635C] dark:text-[#8FA89E]">
+                  v{installedVersionName} ({installedVersionCode})
+                </span>
+              </div>
+              <p className="text-xs text-[#52635C] dark:text-[#A3B8AF]">
+                {updateStatus === 'none'
+                  ? t.updates.upToDate
+                  : `${t.updates.title}: v${latestAndroidVersion?.version_name}`}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={async () => {
+                await refreshAppConfig();
+                setUpdateModalOpen(true);
+              }}
+              className="min-h-[40px] px-4 py-2 rounded-xl border border-[#E5DFD3] dark:border-[#1B3A2F] text-xs font-semibold text-[#14241E] dark:text-[#F2EFE9] hover:border-[#064E3B] dark:hover:border-[#34D399] self-start sm:self-auto shrink-0"
+            >
+              {t.updates.checkUpdates}
+            </button>
+          </section>
+
+          {/* Verified Content Sources Attribution */}
+          {contentSources.length > 0 && (
+            <section className="lg:col-span-2 rounded-2xl border border-[#E5DFD3] dark:border-[#1B3A2F] bg-white dark:bg-[#0C1F19] p-6 space-y-4">
+              <div className="flex items-center gap-2.5">
+                <BookOpen className="w-5 h-5 text-[#B48A3E] dark:text-[#D4AF6A]" />
+                <h2 className="font-display text-lg font-semibold text-[#14241E] dark:text-[#F2EFE9]">
+                  {t.account.contentSourcesTitle}
+                </h2>
+              </div>
+
+              <div className="divide-y divide-[#EFECE4] dark:divide-[#18352B]">
+                {contentSources.map((src) => (
+                  <div key={src.source_slug} className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="space-y-0.5">
+                      <p className="text-sm font-semibold text-[#14241E] dark:text-[#F2EFE9]">
+                        {src.source_name}{' '}
+                        {src.data_version && (
+                          <span className="text-xs font-normal text-[#52635C] dark:text-[#8FA89E]">
+                            ({src.data_version})
+                          </span>
+                        )}
+                      </p>
+                      {src.attribution_notice && (
+                        <p className="text-xs text-[#52635C] dark:text-[#A3B8AF]">
+                          {src.attribution_notice}
+                        </p>
+                      )}
+                      {src.license && (
+                        <p className="text-[11px] text-[#7A6334] dark:text-[#D4AF6A]">
+                          License: {src.license}
+                        </p>
+                      )}
+                    </div>
+                    {src.source_url && (
+                      <a
+                        href={src.source_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-xs font-medium text-[#064E3B] dark:text-[#34D399] hover:underline shrink-0"
+                      >
+                        <span>{t.adhkar.viewSource}</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">

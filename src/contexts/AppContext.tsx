@@ -1,12 +1,28 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { Capacitor } from '@capacitor/core';
 import { App as CapApp } from '@capacitor/app';
-import { supabase, type Profile } from '../lib/supabase';
+import { Network } from '@capacitor/network';
+import {
+  supabase,
+  type AppAnnouncement,
+  type AppSetting,
+  type AppVersion,
+  type Profile,
+} from '../lib/supabase';
 import { translations, type AppLang, type Translations } from '../lib/i18n';
+import {
+  flushSyncQueue,
+  getCachedValue,
+  getQueuedOps,
+  setCachedValue,
+  subscribeSyncQueue,
+} from '../lib/offlineStore';
 
 export type NavTab = 'home' | 'quran' | 'adhkar' | 'tasbih' | 'account';
+export type QuranMode = 'surahs' | 'search' | 'bookmarks' | 'khatmah';
 export type ThemeMode = 'light' | 'dark';
+export type UpdateStatus = 'none' | 'optional' | 'mandatory';
 
 export interface TargetVerseJump {
   surahId: number;
@@ -42,18 +58,57 @@ interface AppContextValue {
   toggleTheme: () => void;
   activeTab: NavTab;
   setActiveTab: (tab: NavTab) => void;
+  quranMode: QuranMode;
+  setQuranMode: (mode: QuranMode) => void;
+  openKhatmah: () => void;
   targetVerse: TargetVerseJump | null;
   openQuranAt: (surahId: number, verseNumber?: number) => void;
   toast: ToastMessage | null;
   showToast: (text: string, tone?: 'success' | 'error' | 'info') => void;
   clearToast: () => void;
   registerBackHandler: (handler: () => boolean) => () => void;
+
+  // Offline & Sync
+  isOnline: boolean;
+  pendingSyncCount: number;
+  isSyncing: boolean;
+  syncError: string | null;
+  syncNow: () => Promise<void>;
+
+  // Remote App Settings, Announcements & Android Versions
+  configLoading: boolean;
+  maintenanceMode: boolean;
+  maintenanceMessage: string | null;
+  maintenanceEndAt: string | null;
+  activeAnnouncements: AppAnnouncement[];
+  androidVersions: AppVersion[];
+  latestAndroidVersion: AppVersion | null;
+  minSupportedVersionCode: number | null;
+  installedVersionCode: number;
+  installedVersionName: string;
+  updateStatus: UpdateStatus;
+  updateModalOpen: boolean;
+  setUpdateModalOpen: (open: boolean) => void;
+  refreshAppConfig: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
 
 const LANG_STORAGE_KEY = 'nuur_lang';
 const THEME_STORAGE_KEY = 'nuur_theme';
+const DEFAULT_ANDROID_VERSION_CODE = 1;
+const DEFAULT_ANDROID_VERSION_NAME = '1.0';
+
+function parseBooleanSetting(val: unknown): boolean {
+  if (typeof val === 'boolean') return val;
+  if (typeof val === 'string') return val.toLowerCase() === 'true';
+  return false;
+}
+
+function parseStringSetting(val: unknown): string | null {
+  if (typeof val === 'string') return val.trim() || null;
+  return null;
+}
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -83,9 +138,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [activeTab, setActiveTab] = useState<NavTab>('home');
   const activeTabRef = useRef<NavTab>('home');
   activeTabRef.current = activeTab;
+  const [quranMode, setQuranMode] = useState<QuranMode>('surahs');
   const [targetVerse, setTargetVerse] = useState<TargetVerseJump | null>(null);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const backHandlersRef = useRef<Set<() => boolean>>(new Set());
+
+  // Offline & Sync state
+  const [isOnline, setIsOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
+  const [pendingSyncCount, setPendingSyncCount] = useState(0);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+
+  // Remote config state
+  const [configLoading, setConfigLoading] = useState(true);
+  const [publicSettings, setPublicSettings] = useState<AppSetting[]>([]);
+  const [announcements, setAnnouncements] = useState<AppAnnouncement[]>([]);
+  const [androidVersions, setAndroidVersions] = useState<AppVersion[]>([]);
+  const [installedVersionCode, setInstalledVersionCode] = useState(DEFAULT_ANDROID_VERSION_CODE);
+  const [installedVersionName, setInstalledVersionName] = useState(DEFAULT_ANDROID_VERSION_NAME);
+  const [updateModalOpen, setUpdateModalOpen] = useState(false);
 
   const registerBackHandler = useCallback((handler: () => boolean) => {
     backHandlersRef.current.add(handler);
@@ -100,7 +173,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     let removeListener: (() => void) | undefined;
 
     CapApp.addListener('backButton', ({ canGoBack }) => {
-      // Give active sub-views/modals first chance to consume the back press
       const handlers = Array.from(backHandlersRef.current);
       for (let i = handlers.length - 1; i >= 0; i -= 1) {
         if (handlers[i]()) {
@@ -127,6 +199,66 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
       if (removeListener) removeListener();
+    };
+  }, []);
+
+  // Read native Android app version code & name when running on Capacitor native
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    CapApp.getInfo()
+      .then((info) => {
+        const parsedCode = parseInt(info.build, 10);
+        if (!Number.isNaN(parsedCode) && parsedCode > 0) {
+          setInstalledVersionCode(parsedCode);
+        }
+        if (info.version) {
+          setInstalledVersionName(info.version);
+        }
+      })
+      .catch(() => {
+        // Keep defaults
+      });
+  }, []);
+
+  // Online/offline detection (Capacitor Network + browser fallback)
+  useEffect(() => {
+    let mounted = true;
+    const handleOnline = () => {
+      if (mounted) setIsOnline(true);
+    };
+    const handleOffline = () => {
+      if (mounted) setIsOnline(false);
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    let removeNetListener: (() => void) | undefined;
+    if (Capacitor.isNativePlatform()) {
+      Network.getStatus()
+        .then((status) => {
+          if (mounted) setIsOnline(status.connected);
+        })
+        .catch(() => {});
+
+      Network.addListener('networkStatusChange', (status) => {
+        if (mounted) setIsOnline(status.connected);
+      })
+        .then((handle) => {
+          if (!mounted) {
+            handle.remove();
+            return;
+          }
+          removeNetListener = () => handle.remove();
+        })
+        .catch(() => {});
+    }
+
+    return () => {
+      mounted = false;
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      if (removeNetListener) removeNetListener();
     };
   }, []);
 
@@ -167,8 +299,113 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  // Load the profile created by the existing database trigger (with short retry if trigger just fired)
+  const refreshQueueCount = useCallback(async (uid?: string) => {
+    if (!uid) {
+      setPendingSyncCount(0);
+      return;
+    }
+    const ops = await getQueuedOps(uid);
+    setPendingSyncCount(ops.length);
+    const firstErr = ops.find((o) => o.lastError)?.lastError ?? null;
+    setSyncError(firstErr);
+  }, []);
+
+  useEffect(() => {
+    void refreshQueueCount(user?.id);
+    return subscribeSyncQueue(() => {
+      void refreshQueueCount(user?.id);
+    });
+  }, [user?.id, refreshQueueCount]);
+
+  const syncNow = useCallback(async () => {
+    if (!user || !isOnline) return;
+    setIsSyncing(true);
+    try {
+      const res = await flushSyncQueue(user.id);
+      setPendingSyncCount(res.remaining);
+      setSyncError(res.lastError);
+      if (res.synced > 0 && res.remaining === 0 && !res.lastError) {
+        showToast(translations[lang].offline.syncedSuccess, 'success');
+      }
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [user, isOnline, lang, showToast]);
+
+  // Auto-flush queue when back online or user becomes available
+  useEffect(() => {
+    if (isOnline && user) {
+      void flushSyncQueue(user.id).then((res) => {
+        setPendingSyncCount(res.remaining);
+        setSyncError(res.lastError);
+      });
+    }
+  }, [isOnline, user]);
+
+  // Fetch public settings, announcements, and Android versions (with offline cache fallback)
+  const refreshAppConfig = useCallback(async () => {
+    setConfigLoading(true);
+    try {
+      const [settingsRes, announcementsRes, versionsRes] = await Promise.all([
+        supabase.from('app_settings').select('*').eq('is_public', true),
+        supabase
+          .from('app_announcements')
+          .select('*')
+          .eq('is_active', true)
+          .order('priority', { ascending: false })
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('app_versions')
+          .select('*')
+          .eq('platform', 'android')
+          .eq('is_active', true)
+          .order('version_code', { ascending: false }),
+      ]);
+
+      if (!settingsRes.error && settingsRes.data) {
+        setPublicSettings(settingsRes.data);
+        await setCachedValue('app_settings_public', settingsRes.data);
+      } else {
+        const cached = await getCachedValue<AppSetting[]>('app_settings_public');
+        if (cached) setPublicSettings(cached);
+      }
+
+      if (!announcementsRes.error && announcementsRes.data) {
+        setAnnouncements(announcementsRes.data);
+        await setCachedValue('app_announcements_public', announcementsRes.data);
+      } else {
+        const cached = await getCachedValue<AppAnnouncement[]>('app_announcements_public');
+        if (cached) setAnnouncements(cached);
+      }
+
+      if (!versionsRes.error && versionsRes.data) {
+        setAndroidVersions(versionsRes.data);
+        await setCachedValue('app_versions_public', versionsRes.data);
+      } else {
+        const cached = await getCachedValue<AppVersion[]>('app_versions_public');
+        if (cached) setAndroidVersions(cached);
+      }
+    } catch {
+      const [cSettings, cAnnouncements, cVersions] = await Promise.all([
+        getCachedValue<AppSetting[]>('app_settings_public'),
+        getCachedValue<AppAnnouncement[]>('app_announcements_public'),
+        getCachedValue<AppVersion[]>('app_versions_public'),
+      ]);
+      if (cSettings) setPublicSettings(cSettings);
+      if (cAnnouncements) setAnnouncements(cAnnouncements);
+      if (cVersions) setAndroidVersions(cVersions);
+    } finally {
+      setConfigLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshAppConfig();
+  }, [refreshAppConfig]);
+
+  // Load the profile created by the existing database trigger (with cache fallback)
   const loadProfileFromTrigger = useCallback(async (currentUser: User) => {
+    const cacheKey = `profile:${currentUser.id}`;
     const fetchProfile = async () => {
       const { data, error } = await supabase
         .from('profiles')
@@ -179,18 +416,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return data;
     };
 
-    let data = await fetchProfile();
-    if (!data) {
-      // Wait briefly for DB trigger on auth.users if just created
-      await new Promise((r) => window.setTimeout(r, 400));
-      data = await fetchProfile();
-    }
-
-    if (data) {
-      setProfile(data);
-      if (data.locale === 'en' || data.locale === 'so') {
-        setLangState(data.locale);
+    try {
+      let data = await fetchProfile();
+      if (!data) {
+        await new Promise((r) => window.setTimeout(r, 400));
+        data = await fetchProfile();
       }
+
+      if (data) {
+        setProfile(data);
+        await setCachedValue(cacheKey, data);
+        if (data.locale === 'en' || data.locale === 'so') {
+          setLangState(data.locale);
+        }
+      } else {
+        const cached = await getCachedValue<Profile>(cacheKey);
+        if (cached) setProfile(cached);
+      }
+    } catch {
+      const cached = await getCachedValue<Profile>(cacheKey);
+      if (cached) setProfile(cached);
     }
   }, []);
 
@@ -202,27 +447,30 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     await loadProfileFromTrigger(user);
   }, [user, loadProfileFromTrigger]);
 
-  // Restore existing session on app open; never auto-create a new anonymous account on page load
+  // Restore existing session on app open; never auto-create anonymous accounts on page load
   useEffect(() => {
     let mounted = true;
 
     supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
+      const nextUser = data.session?.user ?? null;
       setSession(data.session);
-      setUser(data.session?.user ?? null);
+      setUser(nextUser);
       setAuthLoading(false);
-      if (data.session?.user) {
-        loadProfileFromTrigger(data.session.user);
+      if (nextUser) {
+        void loadProfileFromTrigger(nextUser);
       }
     });
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       if (!mounted) return;
+      const nextUser = nextSession?.user ?? null;
       setSession(nextSession);
-      setUser(nextSession?.user ?? null);
+      setUser(nextUser);
       setAuthLoading(false);
-      if (nextSession?.user) {
-        loadProfileFromTrigger(nextSession.user);
+
+      if (nextUser) {
+        void loadProfileFromTrigger(nextUser);
       } else {
         setProfile(null);
       }
@@ -237,7 +485,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const startAnonymousSession = useCallback(async (): Promise<StartSessionResult> => {
     setStartingSession(true);
     try {
-      // Ensure we do not create a duplicate anonymous user if a session already exists
       const { data: existing } = await supabase.auth.getSession();
       if (existing.session?.user) {
         setSession(existing.session);
@@ -309,9 +556,64 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const openQuranAt = useCallback((surahId: number, verseNumber?: number) => {
+    setQuranMode('surahs');
     setTargetVerse({ surahId, verseNumber, nonce: Date.now() });
     setActiveTab('quran');
   }, []);
+
+  const openKhatmah = useCallback(() => {
+    setQuranMode('khatmah');
+    setActiveTab('quran');
+  }, []);
+
+  // Derived Remote Config values
+  const maintenanceMode = useMemo(() => {
+    const row = publicSettings.find((s) => s.setting_key === 'maintenance_mode');
+    return parseBooleanSetting(row?.setting_value);
+  }, [publicSettings]);
+
+  const maintenanceMessage = useMemo(() => {
+    const row = publicSettings.find((s) => s.setting_key === 'maintenance_message');
+    return parseStringSetting(row?.setting_value);
+  }, [publicSettings]);
+
+  const maintenanceEndAt = useMemo(() => {
+    const row = publicSettings.find((s) => s.setting_key === 'maintenance_end_at');
+    return parseStringSetting(row?.setting_value);
+  }, [publicSettings]);
+
+  const activeAnnouncements = useMemo(() => {
+    const now = Date.now();
+    return announcements.filter((a) => {
+      if (!a.is_active) return false;
+      if (a.starts_at && new Date(a.starts_at).getTime() > now) return false;
+      if (a.ends_at && new Date(a.ends_at).getTime() < now) return false;
+      return true;
+    });
+  }, [announcements]);
+
+  const latestAndroidVersion = useMemo(() => {
+    return androidVersions[0] ?? null;
+  }, [androidVersions]);
+
+  const minSupportedVersionCode = useMemo(() => {
+    const mandatoryCodes = androidVersions
+      .filter((v) => v.is_active && v.is_mandatory)
+      .map((v) => v.version_code);
+    if (mandatoryCodes.length === 0) return null;
+    return Math.max(...mandatoryCodes);
+  }, [androidVersions]);
+
+  const updateStatus: UpdateStatus = useMemo(() => {
+    if (!latestAndroidVersion) return 'none';
+    if (minSupportedVersionCode !== null && installedVersionCode < minSupportedVersionCode) {
+      return 'mandatory';
+    }
+    if (latestAndroidVersion.version_code > installedVersionCode) {
+      return latestAndroidVersion.is_mandatory ? 'mandatory' : 'optional';
+    }
+    return 'none';
+  }, [latestAndroidVersion, minSupportedVersionCode, installedVersionCode]);
 
   return (
     <AppContext.Provider
@@ -331,12 +633,34 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         toggleTheme,
         activeTab,
         setActiveTab,
+        quranMode,
+        setQuranMode,
+        openKhatmah,
         targetVerse,
         openQuranAt,
         toast,
         showToast,
         clearToast,
         registerBackHandler,
+        isOnline,
+        pendingSyncCount,
+        isSyncing,
+        syncError,
+        syncNow,
+        configLoading,
+        maintenanceMode,
+        maintenanceMessage,
+        maintenanceEndAt,
+        activeAnnouncements,
+        androidVersions,
+        latestAndroidVersion,
+        minSupportedVersionCode,
+        installedVersionCode,
+        installedVersionName,
+        updateStatus,
+        updateModalOpen,
+        setUpdateModalOpen,
+        refreshAppConfig,
       }}
     >
       {children}

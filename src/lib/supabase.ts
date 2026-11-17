@@ -163,3 +163,123 @@ export interface TasbihSession {
   session_date: string;
   created_at: string;
 }
+
+export type LocalizedJsonb =
+  | {
+      so?: string;
+      en?: string;
+      ar?: string;
+    }
+  | string
+  | null
+  | undefined;
+
+export function pickLocalizedText(val: LocalizedJsonb, lang: 'so' | 'en'): string {
+  if (!val) return '';
+  if (typeof val === 'string') return val;
+  if (lang === 'en') {
+    return val.en || val.so || val.ar || '';
+  }
+  return val.so || val.en || val.ar || '';
+}
+
+export interface AppSetting {
+  setting_key: string;
+  setting_value: unknown;
+  is_public: boolean;
+  description: string | null;
+  updated_at: string;
+  updated_by: string | null;
+}
+
+export interface AppVersion {
+  id: string;
+  platform: string;
+  version_code: number;
+  version_name: string;
+  release_notes: LocalizedJsonb;
+  apk_url: string | null;
+  is_mandatory: boolean;
+  is_active: boolean;
+  created_at: string;
+  created_by: string | null;
+}
+
+export interface AppAnnouncement {
+  id: string;
+  title: LocalizedJsonb;
+  body: LocalizedJsonb;
+  announcement_type: 'info' | 'warning' | 'update' | 'maintenance' | string;
+  priority: number;
+  is_active: boolean;
+  starts_at: string | null;
+  ends_at: string | null;
+  created_at: string;
+  created_by: string | null;
+}
+
+export interface ContentSource {
+  source_slug: string;
+  source_name: string;
+  source_url: string | null;
+  license: string | null;
+  attribution_notice: string | null;
+  data_version: string | null;
+  checked_at: string | null;
+}
+
+export type KhatmahDurationDays = 30 | 60 | 90;
+export type KhatmahPlanStatus = 'active' | 'paused' | 'completed' | 'cancelled';
+
+export interface KhatmahPlan {
+  id: string;
+  user_id: string;
+  name: string;
+  duration_days: KhatmahDurationDays | number;
+  start_date: string;
+  status: KhatmahPlanStatus;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KhatmahReadingLog {
+  id: string;
+  plan_id: string;
+  user_id: string;
+  reading_date: string;
+  start_verse_id: number;
+  end_verse_id: number;
+  note: string | null;
+  created_at: string;
+}
+
+export interface KhatmahDailyScheduleRow {
+  plan_id: string;
+  user_id: string;
+  plan_name: string;
+  status: KhatmahPlanStatus;
+  day_number: number;
+  scheduled_date: string;
+  start_verse_id: number;
+  end_verse_id: number;
+  target_verses: number;
+}
+
+export interface KhatmahPlanSummary {
+  plan_id: string;
+  user_id: string;
+  name: string;
+  duration_days: number;
+  start_date: string;
+  target_end_date: string;
+  status: KhatmahPlanStatus;
+  completed_at: string | null;
+  total_verses: number;
+  last_read_verse_id: number | null;
+  progress_percentage: number | null;
+  reading_days: number;
+  reading_sessions: number;
+  created_at: string;
+  updated_at: string;
+}

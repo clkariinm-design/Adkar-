@@ -9,6 +9,7 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  Download,
   Trash2,
   X,
 } from 'lucide-react';
@@ -20,10 +21,11 @@ import {
   type QuranSurah,
   type QuranVerse,
 } from '../lib/supabase';
+import { enqueueSyncOp, getCachedValue, setCachedValue } from '../lib/offlineStore';
+import { KhatmahView } from './KhatmahView';
 
 const VERSES_PER_PAGE = 20;
 
-type QuranMode = 'surahs' | 'search' | 'bookmarks';
 type ArabicScale = 'sm' | 'md' | 'lg' | 'xl';
 
 const ARABIC_SIZE_CLASSES: Record<ArabicScale, string> = {
@@ -42,9 +44,19 @@ function toArabicIndicDigits(num: number): string {
 }
 
 export function QuranView() {
-  const { user, lang, t, targetVerse, openQuranAt, showToast, registerBackHandler } = useApp();
+  const {
+    user,
+    lang,
+    t,
+    quranMode: mode,
+    setQuranMode: setMode,
+    targetVerse,
+    openQuranAt,
+    showToast,
+    registerBackHandler,
+    isOnline,
+  } = useApp();
 
-  const [mode, setMode] = useState<QuranMode>('surahs');
   const [surahs, setSurahs] = useState<QuranSurah[]>([]);
   const [surahsLoading, setSurahsLoading] = useState(true);
   const [surahsError, setSurahsError] = useState<string | null>(null);
@@ -79,6 +91,11 @@ export function QuranView() {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
 
+  // Offline Quran pre-cache progress
+  const [cachedSurahIds, setCachedSurahIds] = useState<number[]>([]);
+  const [cachingAll, setCachingAll] = useState(false);
+  const [cachingCount, setCachingCount] = useState(0);
+
   const pendingScrollVerseRef = useRef<number | null>(null);
   const pendingAutoSaveRef = useRef<{ surahId: number; verseNumber: number } | null>(null);
 
@@ -100,6 +117,12 @@ export function QuranView() {
     });
   }, [registerBackHandler, editingBookmarkVerse, mode, mobileReaderOpen]);
 
+  useEffect(() => {
+    void getCachedValue<number[]>('quran:cached_surahs').then((ids) => {
+      if (ids) setCachedSurahIds(ids);
+    });
+  }, []);
+
   const fetchSurahs = useCallback(async () => {
     setSurahsLoading(true);
     setSurahsError(null);
@@ -109,9 +132,16 @@ export function QuranView() {
         .select('*')
         .order('sort_order', { ascending: true });
       if (error) throw error;
-      setSurahs(data ?? []);
+      const list = data ?? [];
+      setSurahs(list);
+      await setCachedValue('quran:surahs', list);
     } catch (err) {
-      setSurahsError(err instanceof Error ? err.message : 'Failed to load Surahs');
+      const cached = await getCachedValue<QuranSurah[]>('quran:surahs');
+      if (cached && cached.length > 0) {
+        setSurahs(cached);
+      } else {
+        setSurahsError(err instanceof Error ? err.message : 'Failed to load Surahs');
+      }
     } finally {
       setSurahsLoading(false);
     }
@@ -124,6 +154,8 @@ export function QuranView() {
   const fetchUserQuranData = useCallback(async () => {
     if (!user) return;
     setBookmarksLoading(true);
+    const progCacheKey = `quran:progress:${user.id}`;
+    const bmCacheKey = `quran:bookmarks:${user.id}`;
     try {
       const [progRes, bmRes] = await Promise.all([
         supabase
@@ -141,10 +173,26 @@ export function QuranView() {
       ]);
       if (!progRes.error && progRes.data) {
         setReadingProgress(progRes.data);
+        await setCachedValue(progCacheKey, progRes.data);
+      } else {
+        const cachedProg = await getCachedValue<QuranReadingProgress>(progCacheKey);
+        if (cachedProg) setReadingProgress(cachedProg);
       }
       if (!bmRes.error && bmRes.data) {
-        setBookmarks(bmRes.data as unknown as QuranBookmark[]);
+        const bmList = bmRes.data as unknown as QuranBookmark[];
+        setBookmarks(bmList);
+        await setCachedValue(bmCacheKey, bmList);
+      } else {
+        const cachedBm = await getCachedValue<QuranBookmark[]>(bmCacheKey);
+        if (cachedBm) setBookmarks(cachedBm);
       }
+    } catch {
+      const [cachedProg, cachedBm] = await Promise.all([
+        getCachedValue<QuranReadingProgress>(progCacheKey),
+        getCachedValue<QuranBookmark[]>(bmCacheKey),
+      ]);
+      if (cachedProg) setReadingProgress(cachedProg);
+      if (cachedBm) setBookmarks(cachedBm);
     } finally {
       setBookmarksLoading(false);
       setUserQuranLoaded(true);
@@ -165,7 +213,7 @@ export function QuranView() {
     pendingScrollVerseRef.current = targetNum;
     pendingAutoSaveRef.current = { surahId: targetVerse.surahId, verseNumber: targetNum };
     setMobileReaderOpen(true);
-  }, [targetVerse]);
+  }, [targetVerse, setMode]);
 
   const activeSurah = useMemo(
     () => surahs.find((s) => s.id === selectedSurahId) ?? null,
@@ -181,6 +229,31 @@ export function QuranView() {
     async (surahId: number, verseNumber: number, showFeedback = false) => {
       if (!user) return;
       const nowIso = new Date().toISOString();
+      const optimistic: QuranReadingProgress = {
+        user_id: user.id,
+        last_surah_id: surahId,
+        last_verse_number: verseNumber,
+        last_read_at: nowIso,
+      };
+      setReadingProgress(optimistic);
+      await setCachedValue(`quran:progress:${user.id}`, optimistic);
+
+      const queueOffline = async () => {
+        await enqueueSyncOp(user.id, 'reading_progress', `reading_progress:${user.id}`, {
+          last_surah_id: surahId,
+          last_verse_number: verseNumber,
+          last_read_at: nowIso,
+        });
+        if (showFeedback) {
+          showToast(t.quran.lastReadSaved, 'info');
+        }
+      };
+
+      if (!isOnline) {
+        await queueOffline();
+        return;
+      }
+
       try {
         const { data, error } = await supabase
           .from('quran_reading_progress')
@@ -197,14 +270,19 @@ export function QuranView() {
           .single();
         if (error) throw error;
         setReadingProgress(data);
+        await setCachedValue(`quran:progress:${user.id}`, data);
         if (showFeedback) {
           showToast(t.quran.lastReadSaved, 'success');
         }
       } catch (err) {
-        showToast(err instanceof Error ? err.message : 'Error saving progress', 'error');
+        if (!isOnline || (err instanceof TypeError && err.message.toLowerCase().includes('fetch'))) {
+          await queueOffline();
+        } else {
+          showToast(err instanceof Error ? err.message : 'Error saving progress', 'error');
+        }
       }
     },
-    [user, showToast, t.quran.lastReadSaved]
+    [user, isOnline, showToast, t.quran.lastReadSaved]
   );
 
   const fetchVerses = useCallback(async () => {
@@ -212,8 +290,38 @@ export function QuranView() {
     setVersesError(null);
     const from = (page - 1) * VERSES_PER_PAGE;
     const to = from + VERSES_PER_PAGE - 1;
+    const pageCacheKey = `quran:verses:${selectedSurahId}:p${page}`;
+
+    const scrollIfNeeded = () => {
+      if (pendingScrollVerseRef.current !== null) {
+        const targetNum = pendingScrollVerseRef.current;
+        pendingScrollVerseRef.current = null;
+        window.requestAnimationFrame(() => {
+          const el = document.getElementById(`verse-${selectedSurahId}-${targetNum}`);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        });
+      }
+    };
 
     try {
+      if (!isOnline) {
+        const fullSurah = await getCachedValue<QuranVerse[]>(`quran:surah_all:${selectedSurahId}`);
+        if (fullSurah && fullSurah.length > 0) {
+          setVerses(fullSurah.slice(from, to + 1));
+          scrollIfNeeded();
+          return;
+        }
+        const cachedPage = await getCachedValue<QuranVerse[]>(pageCacheKey);
+        if (cachedPage) {
+          setVerses(cachedPage);
+          scrollIfNeeded();
+          return;
+        }
+        throw new Error(t.offline.offlineBadge);
+      }
+
       const { data, error } = await supabase
         .from('quran_verses')
         .select(
@@ -226,23 +334,26 @@ export function QuranView() {
       if (error) throw error;
       const loaded = (data as unknown as QuranVerse[]) ?? [];
       setVerses(loaded);
-
-      if (pendingScrollVerseRef.current !== null) {
-        const targetNum = pendingScrollVerseRef.current;
-        pendingScrollVerseRef.current = null;
-        window.requestAnimationFrame(() => {
-          const el = document.getElementById(`verse-${selectedSurahId}-${targetNum}`);
-          if (el) {
-            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          }
-        });
-      }
+      await setCachedValue(pageCacheKey, loaded);
+      scrollIfNeeded();
     } catch (err) {
-      setVersesError(err instanceof Error ? err.message : 'Failed to load verses');
+      const fullSurah = await getCachedValue<QuranVerse[]>(`quran:surah_all:${selectedSurahId}`);
+      if (fullSurah && fullSurah.length > 0) {
+        setVerses(fullSurah.slice(from, to + 1));
+        scrollIfNeeded();
+      } else {
+        const cachedPage = await getCachedValue<QuranVerse[]>(pageCacheKey);
+        if (cachedPage) {
+          setVerses(cachedPage);
+          scrollIfNeeded();
+        } else {
+          setVersesError(err instanceof Error ? err.message : 'Failed to load verses');
+        }
+      }
     } finally {
       setVersesLoading(false);
     }
-  }, [selectedSurahId, page]);
+  }, [selectedSurahId, page, isOnline, t.offline.offlineBadge]);
 
   useEffect(() => {
     if (mode === 'surahs') {
@@ -368,6 +479,39 @@ export function QuranView() {
     }
   };
 
+  const handleCacheAllQuran = async () => {
+    if (!isOnline || cachingAll) return;
+    setCachingAll(true);
+    try {
+      const cachedSet = new Set<number>(cachedSurahIds);
+      setCachingCount(cachedSet.size);
+      for (let sId = 1; sId <= 114; sId += 1) {
+        if (cachedSet.has(sId)) continue;
+        const { data, error } = await supabase
+          .from('quran_verses')
+          .select(
+            'id, surah_id, verse_number, text_uthmani, text_simple, juz_number, hizb_number, page_number, sajda, quran_translations(id, verse_id, language_code, translator, translation_text, source_name, edition_version, footnotes)'
+          )
+          .eq('surah_id', sId)
+          .order('verse_number', { ascending: true });
+        if (error) throw error;
+        if (data) {
+          await setCachedValue(`quran:surah_all:${sId}`, data);
+          cachedSet.add(sId);
+          const nextIds = Array.from(cachedSet).sort((a, b) => a - b);
+          await setCachedValue('quran:cached_surahs', nextIds);
+          setCachedSurahIds(nextIds);
+          setCachingCount(nextIds.length);
+        }
+      }
+      showToast(`${t.offline.quranCachedCount}: 114/114`, 'success');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed caching Quran', 'error');
+    } finally {
+      setCachingAll(false);
+    }
+  };
+
   const handleVerseSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     const q = verseQuery.trim();
@@ -375,6 +519,33 @@ export function QuranView() {
     setSearchLoading(true);
     setSearchError(null);
     setHasSearched(true);
+
+    const searchCachedOffline = async () => {
+      const qLower = q.toLowerCase();
+      const matches: QuranVerse[] = [];
+      for (const sId of cachedSurahIds) {
+        const versesOfSurah = await getCachedValue<QuranVerse[]>(`quran:surah_all:${sId}`);
+        if (!versesOfSurah) continue;
+        for (const v of versesOfSurah) {
+          const hitAr = v.text_uthmani.includes(q) || (v.text_simple ?? '').includes(q);
+          const hitTr = (v.quran_translations ?? []).some((tr) =>
+            tr.translation_text.toLowerCase().includes(qLower)
+          );
+          if (hitAr || hitTr) {
+            matches.push(v);
+            if (matches.length >= 25) break;
+          }
+        }
+        if (matches.length >= 25) break;
+      }
+      setSearchResults(matches);
+    };
+
+    if (!isOnline) {
+      await searchCachedOffline();
+      setSearchLoading(false);
+      return;
+    }
 
     try {
       const [transMatches, arUthmaniMatches, arSimpleMatches] = await Promise.all([
@@ -424,7 +595,11 @@ export function QuranView() {
       if (fullErr) throw fullErr;
       setSearchResults((fullVerses as unknown as QuranVerse[]) ?? []);
     } catch (err) {
-      setSearchError(err instanceof Error ? err.message : 'Search failed');
+      if (cachedSurahIds.length > 0) {
+        await searchCachedOffline();
+      } else {
+        setSearchError(err instanceof Error ? err.message : 'Search failed');
+      }
     } finally {
       setSearchLoading(false);
     }
@@ -450,45 +625,78 @@ export function QuranView() {
           </p>
         </div>
 
-        <div className="flex items-center p-1 rounded-xl bg-[#EFECE4] dark:bg-[#0C1F19] border border-[#E5DFD3] dark:border-[#1B3A2F] self-start md:self-auto">
+        <div className="flex flex-wrap items-center gap-2 self-start md:self-auto">
           <button
             type="button"
-            onClick={() => setMode('surahs')}
-            className={`px-3.5 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
-              mode === 'surahs'
-                ? 'bg-white dark:bg-[#143328] text-[#064E3B] dark:text-[#F2EFE9] shadow-xs'
-                : 'text-[#52635C] dark:text-[#8FA89E] hover:text-[#14241E]'
-            }`}
+            disabled={!isOnline || cachingAll || cachedSurahIds.length >= 114}
+            onClick={() => void handleCacheAllQuran()}
+            className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[#E5DFD3] dark:border-[#1B3A2F] bg-white dark:bg-[#0C1F19] text-xs font-medium text-[#14241E] dark:text-[#F2EFE9] inline-flex items-center gap-1.5 disabled:opacity-60 whitespace-nowrap"
           >
-            {t.quran.modeSurahs}
+            <Download className="w-3.5 h-3.5 text-[#064E3B] dark:text-[#34D399]" />
+            <span className="tabular-nums">
+              {cachingAll
+                ? `${t.offline.cachingQuran} ${cachingCount}/114`
+                : cachedSurahIds.length >= 114
+                ? `114 ${t.offline.quranCachedCount}`
+                : `${t.offline.cacheAllQuran}${
+                    cachedSurahIds.length > 0 ? ` (${cachedSurahIds.length}/114)` : ''
+                  }`}
+            </span>
           </button>
-          <button
-            type="button"
-            onClick={() => setMode('search')}
-            className={`px-3.5 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
-              mode === 'search'
-                ? 'bg-white dark:bg-[#143328] text-[#064E3B] dark:text-[#F2EFE9] shadow-xs'
-                : 'text-[#52635C] dark:text-[#8FA89E] hover:text-[#14241E]'
-            }`}
-          >
-            {t.quran.modeVerseSearch}
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode('bookmarks')}
-            className={`px-3.5 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
-              mode === 'bookmarks'
-                ? 'bg-white dark:bg-[#143328] text-[#064E3B] dark:text-[#F2EFE9] shadow-xs'
-                : 'text-[#52635C] dark:text-[#8FA89E] hover:text-[#14241E]'
-            }`}
-          >
-            {t.quran.modeBookmarks}
-            {bookmarks.length > 0 ? ` (${bookmarks.length})` : ''}
-          </button>
+
+          <div className="flex flex-wrap items-center p-1 rounded-xl bg-[#EFECE4] dark:bg-[#0C1F19] border border-[#E5DFD3] dark:border-[#1B3A2F]">
+            <button
+              type="button"
+              onClick={() => setMode('surahs')}
+              className={`px-3 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
+                mode === 'surahs'
+                  ? 'bg-white dark:bg-[#143328] text-[#064E3B] dark:text-[#F2EFE9] shadow-xs'
+                  : 'text-[#52635C] dark:text-[#8FA89E] hover:text-[#14241E]'
+              }`}
+            >
+              {t.quran.modeSurahs}
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode('khatmah')}
+              className={`px-3 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
+                mode === 'khatmah'
+                  ? 'bg-white dark:bg-[#143328] text-[#064E3B] dark:text-[#F2EFE9] shadow-xs'
+                  : 'text-[#52635C] dark:text-[#8FA89E] hover:text-[#14241E]'
+              }`}
+            >
+              {t.khatmah.tabLabel}
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode('search')}
+              className={`px-3 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
+                mode === 'search'
+                  ? 'bg-white dark:bg-[#143328] text-[#064E3B] dark:text-[#F2EFE9] shadow-xs'
+                  : 'text-[#52635C] dark:text-[#8FA89E] hover:text-[#14241E]'
+              }`}
+            >
+              {t.quran.modeVerseSearch}
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode('bookmarks')}
+              className={`px-3 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
+                mode === 'bookmarks'
+                  ? 'bg-white dark:bg-[#143328] text-[#064E3B] dark:text-[#F2EFE9] shadow-xs'
+                  : 'text-[#52635C] dark:text-[#8FA89E] hover:text-[#14241E]'
+              }`}
+            >
+              {t.quran.modeBookmarks}
+              {bookmarks.length > 0 ? ` (${bookmarks.length})` : ''}
+            </button>
+          </div>
         </div>
       </div>
 
-      {readingProgress && progressSurah && (
+      {mode === 'khatmah' && <KhatmahView surahs={surahs} />}
+
+      {mode !== 'khatmah' && readingProgress && progressSurah && (
         <div className="rounded-xl border border-[#D8CEB8] dark:border-[#244A3C] bg-[#F5F1E6] dark:bg-[#0C1F19] px-5 py-3.5 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3 text-sm">
             <BookOpen className="w-4 h-4 text-[#B48A3E] dark:text-[#D4AF6A] shrink-0" />
