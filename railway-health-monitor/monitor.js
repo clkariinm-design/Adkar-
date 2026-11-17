@@ -98,6 +98,7 @@ function requiredEnv(name) {
 async function requestJson(url, apiKey, range) {
   const headers = {
     apikey: apiKey,
+    Authorization: "Bearer " + apiKey,
     accept: "application/json"
   };
   if (range) {
@@ -157,7 +158,7 @@ async function checkPrivateEndpoint(baseUrl, apiKey, table, column) {
   try {
     const response = await fetch(url, {
       method: "GET",
-      headers: { apikey: apiKey, accept: "application/json" },
+      headers: { apikey: apiKey, Authorization: "Bearer " + apiKey, accept: "application/json" },
       signal: AbortSignal.timeout(TIMEOUT_MS)
     });
 
